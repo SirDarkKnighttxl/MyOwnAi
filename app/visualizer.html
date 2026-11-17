@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8"/>
+<title>TANNIS Visualizer</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+
+  body {
+    background: transparent;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    font-family: 'Courier New', monospace;
+    user-select: none;
+  }
+
+  #container {
+    width: 100%;
+    height: 100%;
+    background: rgba(10,10,18,0.88);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px 12px;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+
+  /* Titlebar — draggable */
+  #titlebar {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    -webkit-app-region: drag;
+    flex-shrink: 0;
+    padding-bottom: 6px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+  }
+
+  #title-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  #logo-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent, #00d4aa);
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+  #title-text {
+    font-size: 9px;
+    letter-spacing: 4px;
+    color: var(--accent, #00d4aa);
+    opacity: 0.7;
+  }
+
+  #title-controls {
+    display: flex;
+    gap: 6px;
+    -webkit-app-region: no-drag;
+  }
+
+  .ctrl-btn {
+    width: 20px;
+    height: 20px;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: transparent;
+    color: rgba(255,255,255,0.4);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Courier New', monospace;
+    transition: background 0.15s, color 0.15s;
+  }
+
+  .ctrl-btn:hover { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.8); }
+  #close-btn:hover { background: rgba(255,80,80,0.2); border-color: rgba(255,80,80,0.4); color: #ff5050; }
+
+  /* Canvas area */
+  #canvas-wrap {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    padding: 4px 0;
+  }
+
+  #viz-canvas { display: block; }
+
+  /* Bottom nav + status */
+  #bottom {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  #viz-nav {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .nav-btn {
+    background: transparent;
+    border: 1px solid rgba(255,255,255,0.1);
+    color: rgba(255,255,255,0.3);
+    border-radius: 4px;
+    width: 20px;
+    height: 20px;
+    cursor: pointer;
+    font-size: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Courier New', monospace;
+    transition: background 0.15s, color 0.15s;
+    -webkit-app-region: no-drag;
+  }
+
+  .nav-btn:hover {
+    background: rgba(255,255,255,0.06);
+    color: var(--accent, #00d4aa);
+    border-color: rgba(255,255,255,0.2);
+  }
+
+  #design-name {
+    font-size: 8px;
+    letter-spacing: 2px;
+    color: rgba(255,255,255,0.2);
+    min-width: 72px;
+    text-align: center;
+  }
+
+  #viz-status {
+    font-size: 8px;
+    letter-spacing: 3px;
+    color: rgba(255,255,255,0.2);
+    transition: color 0.4s;
+  }
+
+  #viz-status.speaking {
+    color: var(--accent, #00d4aa);
+    animation: status-pulse 1.2s ease-in-out infinite;
+  }
+
+  #viz-status.listening { color: #ff9500aa; }
+
+  @keyframes status-pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  #subtitle {
+    font-size: 9px;
+    color: rgba(255,255,255,0.25);
+    letter-spacing: 0.5px;
+    text-align: center;
+    font-style: italic;
+    min-height: 14px;
+    max-width: 280px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: color 0.3s;
+  }
+
+  #subtitle.active { color: rgba(255,255,255,0.5); }
+
+  #mic-btn-pop {
+    margin-top: 4px;
+    background: transparent;
+    border: 1px solid rgba(255,255,255,0.15);
+    color: rgba(255,255,255,0.4);
+    border-radius: 6px;
+    padding: 5px 16px;
+    font-family: 'Courier New', monospace;
+    font-size: 9px;
+    letter-spacing: 2px;
+    cursor: pointer;
+    transition: all 0.15s;
+    -webkit-app-region: no-drag;
+  }
+  #mic-btn-pop:hover {
+    border-color: rgba(255,255,255,0.3);
+    color: rgba(255,255,255,0.7);
+  }
+  #mic-btn-pop.recording {
+    border-color: #ff4a4a;
+    color: #ff4a4a;
+    background: rgba(255,74,74,0.08);
+    animation: pulse 1s ease-in-out infinite;
+  }
+  #viz-input-area {
+    width: 100%;
+    display: flex;
+    gap: 6px;
+    align-items: flex-end;
+    margin-top: 4px;
+  }
+
+  #viz-input {
+    flex: 1;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 6px;
+    color: rgba(255,255,255,0.8);
+    font-family: 'Courier New', monospace;
+    font-size: 9px;
+    padding: 5px 8px;
+    outline: none;
+    resize: none;
+    min-height: 26px;
+    max-height: 80px;
+    overflow-y: auto;
+    line-height: 1.4;
+    letter-spacing: 0.5px;
+    transition: border-color 0.15s;
+    -webkit-app-region: no-drag;
+  }
+
+  #viz-input:focus {
+    border-color: var(--accent, #00d4aa);
+  }
+
+  #viz-input::placeholder {
+    color: rgba(255,255,255,0.2);
+  }
+
+  #viz-send-btn {
+    background: transparent;
+    border: 1px solid rgba(255,255,255,0.15);
+    color: rgba(255,255,255,0.4);
+    border-radius: 6px;
+    padding: 5px 8px;
+    font-family: 'Courier New', monospace;
+    font-size: 9px;
+    cursor: pointer;
+    transition: all 0.15s;
+    -webkit-app-region: no-drag;
+    flex-shrink: 0;
+    align-self: flex-end;
+    height: 26px;
+    letter-spacing: 1px;
+  }
+
+  #viz-send-btn:hover {
+    border-color: var(--accent, #00d4aa);
+    color: var(--accent, #00d4aa);
+  }
+
+  #viz-response {
+    width: 100%;
+    font-size: 9px;
+    color: rgba(255,255,255,0.45);
+    letter-spacing: 0.3px;
+    line-height: 1.5;
+    max-height: 44px;
+    overflow-y: hidden;
+    font-style: italic;
+    text-align: left;
+    padding: 4px 2px;
+    border-top: 1px solid rgba(255,255,255,0.06);
+    display: none;
+    transition: max-height 0.25s ease;
+  }
+
+  #viz-response.visible {
+    display: block;
+  }
+
+  #viz-response.expanded {
+    max-height: 180px;
+    overflow-y: auto;
+  }
+
+  #viz-response::-webkit-scrollbar { width: 2px; }
+  #viz-response::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+  
+
+ 
+</style>
+</head>
+<body>
+
+<div id="container">
+  <div id="titlebar">
+    <div id="title-left">
+      <div id="logo-dot"></div>
+      <span id="title-text">T.A.N.N.I.S</span>
+    </div>
+    <div id="title-controls">
+      <button class="ctrl-btn" onclick="cycleDesign(-1)" title="Previous">&#8592;</button>
+      <button class="ctrl-btn" onclick="cycleDesign(1)"  title="Next">&#8594;</button>
+      <button class="ctrl-btn" id="close-btn" onclick="closeWindow()">&#10005;</button>
+    </div>
+  </div>
+
+  <div id="canvas-wrap">
+    <canvas id="viz-canvas"></canvas>
+  </div>
+
+  <div id="bottom">
+    <div id="viz-nav">
+      <button class="nav-btn" onclick="cycleDesign(-1)">&#8592;</button>
+      <div id="design-name">WAVEFORM</div>
+      <button class="nav-btn" onclick="cycleDesign(1)">&#8594;</button>
+    </div>
+    <div id="viz-status">IDLE</div>
+    <div id="subtitle"></div>
+    <div style="width:100%;display:flex;justify-content:flex-end">
+      <button id="viz-expand-btn" onclick="toggleFullResponse()"
+        style="background:transparent;border:none;color:rgba(255,255,255,0.25);font-family:'Courier New',monospace;font-size:8px;letter-spacing:1px;cursor:pointer;padding:2px 0;line-height:1;-webkit-app-region:no-drag;display:none"
+        onmouseover="this.style.color='var(--accent,#00d4aa)'" onmouseout="this.style.color='rgba(255,255,255,0.25)'">
+        &#9660; EXPAND
+      </button>
+    </div>
+    <div id="viz-response"></div>
+    <div style="display:flex;gap:6px;width:100%;justify-content:center;-webkit-app-region:no-drag">
+      <button id="viz-loop-btn" onclick="toggleLoopPopout()" title="Toggle conversation loop"
+        style="background:transparent;border:1px solid rgba(255,255,255,0.15);color:rgba(255,255,255,0.35);border-radius:6px;padding:5px 12px;font-family:'Courier New',monospace;font-size:9px;letter-spacing:2px;cursor:pointer;transition:all 0.15s;-webkit-app-region:no-drag">
+        &#9854; LOOP
+      </button>
+      <button id="mic-btn-pop" onclick="toggleMicPopout()">&#127908; MIC</button>
+      <button id="viz-stop-btn" onclick="stopVoiceResponse()" title="Stop voice response"
+        style="background:transparent;border:1px solid rgba(255,74,74,0.3);color:rgba(255,74,74,0.5);border-radius:6px;padding:5px 12px;font-family:'Courier New',monospace;font-size:9px;letter-spacing:2px;cursor:pointer;transition:all 0.15s;-webkit-app-region:no-drag">
+        &#9632; STOP
+      </button>
+    </div>
+    <div id="viz-input-area">
+      <textarea id="viz-input" placeholder="Ask anything..." rows="1"
+        oninput="autoResizeVizInput(this)"
+        onkeydown="vizInputKeydown(event)"></textarea>
+      <button id="viz-send-btn" onclick="sendVizMessage()">&#9654;</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const { ipcRenderer } = require('electron')
+
+// ── SENTRY (VISUALIZER) ───────────────────────────────
+require('@sentry/electron/renderer').init({
+  dsn: 'https://76b824190eda7d3428b5cdb8743670a7@o4511618309357568.ingest.us.sentry.io/4511618336227328',
+})
+// ─────────────────────────────────────────────────────
+
+// ── State ──
+let vizMode    = 'idle'
+let vizDesign  = 0
+let accentHex  = '#00d4aa'
+let ampVal     = 0
+const DESIGNS  = ['WAVEFORM', 'RADIAL', 'DOT SPHERE']
+
+// ── Canvas ──
+const canvas   = document.getElementById('viz-canvas')
+const ctx      = canvas.getContext('2d')
+const statusEl = document.getElementById('viz-status')
+const subtitleEl = document.getElementById('subtitle')
+const designEl = document.getElementById('design-name')
+
+// ── Subtitle ──
+let subTimer = null
+let subFull  = ''
+let subIdx   = 0
+
+function streamSubtitle(text) {
+  if (!text) return
+  subFull = text; subIdx = 0
+  subtitleEl.textContent = ''
+  subtitleEl.classList.add('active')
+  if (subTimer) clearInterval(subTimer)
+  const ms = Math.max(9, Math.min(18, text.length > 0 ? 5000/text.length : 14))
+  subTimer = setInterval(() => {
+    subIdx = Math.min(subIdx+1, subFull.length)
+    subtitleEl.textContent = subFull.slice(0, subIdx)
+    if (subIdx >= subFull.length) clearInterval(subTimer)
+  }, ms)
+}
+
+function clearSubtitle() {
+  if (subTimer) { clearInterval(subTimer); subTimer = null }
+  subtitleEl.classList.remove('active')
+  subtitleEl.textContent = ''
+}
+
+// ── IPC from main window ──
+ipcRenderer.on('viz-state', (e, data) => {
+  const { mode, accent, text, amp, name } = data
+
+  if (name) {
+    document.getElementById('title-text').textContent = name.toUpperCase()
+  }
+
+  if (accent && accent !== accentHex) {
+    accentHex = accent
+    document.documentElement.style.setProperty('--accent', accent)
+    document.getElementById('logo-dot').style.background = accent
+  }
+
+  ampVal = amp || 0
+
+  if (mode !== vizMode) {
+    vizMode = mode
+    if (mode === 'speaking') {
+      statusEl.textContent = 'SPEAKING'
+      statusEl.className   = 'speaking'
+      if (text) streamSubtitle(text)
+    } else if (mode === 'listening') {
+      statusEl.textContent = 'LISTENING'
+      statusEl.className   = 'listening'
+      clearSubtitle()
+    } else {
+      statusEl.textContent = 'IDLE'
+      statusEl.className   = ''
+      clearSubtitle()
+    }
+  }
+})
+
+// ── Design nav ──
+function cycleDesign(dir) {
+  vizDesign = (vizDesign + dir + DESIGNS.length) % DESIGNS.length
+  designEl.textContent = DESIGNS[vizDesign]
+  resizeCanvas()
+}
+
+function closeWindow() {
+  ipcRenderer.send('close-viz-window')
+}
+
+// ── Canvas sizing ──
+function resizeCanvas() {
+  const wrap = document.getElementById('canvas-wrap')
+  const w    = wrap.clientWidth  - 16
+  const h    = wrap.clientHeight - 8
+  if (vizDesign === 0) {
+    canvas.width  = w
+    canvas.height = Math.min(h, 120)
+  } else {
+    const sz      = Math.min(w, h, 200)
+    canvas.width  = sz
+    canvas.height = sz
+  }
+}
+
+window.addEventListener('resize', () => { resizeCanvas() })
+setTimeout(resizeCanvas, 50)
+
+// ── Color helpers ──
+function _rgb() {
+  const hex = accentHex.replace('#','')
+  return [
+    parseInt(hex.slice(0,2),16),
+    parseInt(hex.slice(2,4),16),
+    parseInt(hex.slice(4,6),16)
+  ]
+}
+function _va(a) {
+  const [r,g,b] = _rgb()
+  return `rgba(${r},${g},${b},${a})`
+}
+
+// ── Animation state ──
+const BAR_COUNT  = 48
+const barH       = new Float32Array(BAR_COUNT).fill(0)
+const RAD_BANDS  = 64
+const radA       = new Float32Array(RAD_BANDS).fill(0)
+
+const DOT_COUNT  = 220
+const dots       = Array.from({length:DOT_COUNT}, () => ({
+  theta:   Math.acos(2*Math.random()-1),
+  phi:     Math.random()*Math.PI*2,
+  basePhi: Math.random()*Math.PI*2,
+  size:    0.8 + Math.random()*1.4,
+  speed:   0.0003 + Math.random()*0.0004,
+  phase:   Math.random()*Math.PI*2
+}))
+
+// ── Simulated amplitude ──
+let simAmps  = []
+let simCur   = 0
+let simTgt   = 0
+
+function getAmp() {
+  if (vizMode === 'speaking' && ampVal > 0) return ampVal
+  if (vizMode === 'speaking') {
+    simCur += (simTgt - simCur) * 0.1
+    if (Math.abs(simCur-simTgt)<0.01 && simAmps.length>0) simTgt = simAmps.shift()
+    return simCur
+  }
+  if (vizMode === 'idle') return 0.04 + 0.025*Math.sin(Date.now()*0.0015)
+  if (vizMode === 'listening') return 0.05 + 0.04*Math.random()
+  return 0
+}
+
+// ── Mic control ──
+function toggleMicPopout() {
+  ipcRenderer.send('viz-mic-toggle')
+}
+
+function stopVoiceResponse() {
+  ipcRenderer.send('viz-stop-speaking')
+}
+
+function toggleLoopPopout() {
+  ipcRenderer.send('viz-loop-toggle')
+}
+
+ipcRenderer.on('viz-loop-state', (e, data) => {
+  const btn = document.getElementById('viz-loop-btn')
+  if (!btn) return
+  if (data.active) {
+    btn.style.borderColor = 'var(--accent, #00d4aa)'
+    btn.style.color       = 'var(--accent, #00d4aa)'
+    btn.style.background  = 'rgba(0,212,170,0.08)'
+  } else {
+    btn.style.borderColor = 'rgba(255,255,255,0.15)'
+    btn.style.color       = 'rgba(255,255,255,0.35)'
+    btn.style.background  = 'transparent'
+  }
+})
+
+ipcRenderer.on('viz-mic-state', (e, data) => {
+  const btn = document.getElementById('mic-btn-pop')
+  if (!btn) return
+  if (data.isRecording) {
+    btn.classList.add('recording')
+    btn.innerHTML = '&#9632; STOP'
+  } else {
+    btn.classList.remove('recording')
+    btn.innerHTML = '&#127908; MIC'
+  }
+})
+// ── Text input ──
+function autoResizeVizInput(el) {
+  el.style.height = '26px'
+  el.style.height = Math.min(el.scrollHeight, 80) + 'px'
+}
+
+function vizInputKeydown(e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault()
+    sendVizMessage()
+  }
+}
+
+function sendVizMessage() {
+  const input = document.getElementById('viz-input')
+  const text  = input.value.trim()
+  if (!text) return
+  input.value = ''
+  input.style.height = '26px'
+
+  // Show sending state
+  const respEl = document.getElementById('viz-response')
+  respEl.textContent = '◈ ...'
+  respEl.classList.add('visible')
+
+  ipcRenderer.send('viz-send-message', { text })
+}
+
+let vizFullResponseText = ''
+let vizResponseExpanded = false
+
+function toggleFullResponse() {
+  vizResponseExpanded = !vizResponseExpanded
+  const respEl    = document.getElementById('viz-response')
+  const expandBtn = document.getElementById('viz-expand-btn')
+
+  if (vizResponseExpanded) {
+    respEl.textContent = vizFullResponseText
+    respEl.classList.add('expanded')
+    expandBtn.innerHTML = '&#9650; COLLAPSE'
+    expandBtn.style.top = '4px'
+    respEl.scrollTop = 0
+  } else {
+    respEl.textContent = vizFullResponseText.slice(0, 300) + (vizFullResponseText.length > 300 ? '...' : '')
+    respEl.classList.remove('expanded')
+    expandBtn.innerHTML = '&#9660; EXPAND'
+  }
+}
+
+// Listen for response from main window
+ipcRenderer.on('viz-response', (e, data) => {
+  const respEl    = document.getElementById('viz-response')
+  const expandBtn = document.getElementById('viz-expand-btn')
+
+  if (data.text) {
+    vizFullResponseText = data.fullText || data.text
+    vizResponseExpanded = false
+
+    // Reset to collapsed state
+    respEl.classList.remove('expanded')
+    respEl.classList.add('visible')
+    respEl.textContent = ''
+    expandBtn.innerHTML = '&#9660; EXPAND'
+    expandBtn.style.display = 'block'
+
+    let i = 0
+    const preview = data.text
+    const tick = setInterval(() => {
+      i = Math.min(i + 2, preview.length)
+      respEl.textContent = preview.slice(0, i)
+      respEl.scrollTop = respEl.scrollHeight
+      if (i >= preview.length) clearInterval(tick)
+    }, 12)
+  }
+})
+// ── Draw loop ──
+function draw() {
+  requestAnimationFrame(draw)
+  const W = canvas.width, H = canvas.height
+  if (!W || !H) return
+  ctx.clearRect(0,0,W,H)
+  const amp = getAmp()
+  if (vizDesign===0) drawWaveform(W,H,amp)
+  if (vizDesign===1) drawRadial(W,H,amp)
+  if (vizDesign===2) drawDotSphere(W,H,amp)
+}
+
+// ── WAVEFORM ──
+function drawWaveform(W,H,amp) {
+  const bW    = W/BAR_COUNT
+  const maxH  = H*0.82
+  const baseY = H/2
+  const SPRING = 0.18
+
+  for (let i=0;i<BAR_COUNT;i++) {
+    let tgt
+    if (vizMode==='idle') {
+      const dist = Math.abs(i-BAR_COUNT/2)/(BAR_COUNT/2)
+      tgt = amp*(1-dist*0.6)
+    } else if (vizMode==='listening') {
+      tgt = 0.05+0.04*Math.random()
+    } else {
+      const dist = Math.abs(i-BAR_COUNT/2)/(BAR_COUNT/2)
+      const noise = 0.7+0.3*Math.sin(Date.now()*0.003+i*0.7)
+      tgt = amp*(1-dist*0.4)*noise
+    }
+    barH[i] += (tgt-barH[i])*(vizMode==='idle'?0.05:SPRING)
+
+    const h     = barH[i]*maxH
+    const x     = i*bW+bW*0.15
+    const w     = bW*0.7
+    const alpha = 0.25+barH[i]*0.75
+    const r     = Math.min(w/2,Math.max(h,0.5)/2,3)
+
+    const grad = ctx.createLinearGradient(x,baseY-h,x,baseY+h)
+    grad.addColorStop(0,   _va(alpha*0.85))
+    grad.addColorStop(0.5, _va(alpha))
+    grad.addColorStop(1,   _va(alpha*0.85))
+    ctx.fillStyle = grad
+    roundRect(ctx,x,baseY-Math.max(h,0.5),w,Math.max(h,0.5)*2,r)
+    ctx.fill()
+
+    if (barH[i]>0.45) {
+      ctx.shadowColor = _va((barH[i]-0.45)*0.5)
+      ctx.shadowBlur  = 8
+      roundRect(ctx,x,baseY-h,w,h*2,r)
+      ctx.fill()
+      ctx.shadowBlur = 0
+    }
+  }
+
+  if (vizMode==='idle') {
+    ctx.strokeStyle = _va(0.12+0.06*Math.sin(Date.now()*0.0015))
+    ctx.lineWidth   = 1
+    ctx.beginPath(); ctx.moveTo(0,baseY); ctx.lineTo(W,baseY); ctx.stroke()
+  }
+}
+
+// ── RADIAL ──
+function drawRadial(W,H,amp) {
+  const cx=W/2, cy=H/2, t=Date.now()
+  for (let i=0;i<RAD_BANDS;i++) {
+    let tgt
+    if (vizMode==='idle')      tgt=0.03+0.025*Math.sin(t*0.001+i*0.18)
+    else if (vizMode==='listening') tgt=0.04+0.04*Math.random()
+    else {
+      const dist=Math.abs(i-RAD_BANDS/2)/(RAD_BANDS/2)
+      tgt=amp*(1-dist*0.35)*(0.7+0.3*Math.sin(t*0.004+i*0.5))
+    }
+    radA[i]+=(tgt-radA[i])*(vizMode==='idle'?0.04:0.2)
+  }
+
+  const glowR=60+amp*16
+  const glow=ctx.createRadialGradient(cx,cy,glowR*0.7,cx,cy,glowR*1.3)
+  glow.addColorStop(0,_va(0.04+amp*0.12))
+  glow.addColorStop(1,_va(0))
+  ctx.fillStyle=glow
+  ctx.beginPath(); ctx.arc(cx,cy,glowR*1.3,0,Math.PI*2); ctx.fill()
+
+  ctx.strokeStyle=_va(0.12+amp*0.15)
+  ctx.lineWidth=1
+  ctx.beginPath(); ctx.arc(cx,cy,60,0,Math.PI*2); ctx.stroke()
+
+  const baseR=60, maxBar=42
+  for (let i=0;i<RAD_BANDS;i++) {
+    const angle=(i/RAD_BANDS)*Math.PI*2-Math.PI/2
+    const len=radA[i]*maxBar
+    const x1=cx+Math.cos(angle)*baseR, y1=cy+Math.sin(angle)*baseR
+    const x2=cx+Math.cos(angle)*(baseR+len), y2=cy+Math.sin(angle)*(baseR+len)
+    const norm=radA[i]
+    ctx.strokeStyle=_va(0.3+norm*0.7)
+    ctx.lineWidth=1.6
+    ctx.shadowColor=norm>0.4?_va((norm-0.4)*0.7):'transparent'
+    ctx.shadowBlur=norm>0.4?6:0
+    ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke()
+  }
+  ctx.shadowBlur=0
+
+  const coreR=8+amp*12
+  const core=ctx.createRadialGradient(cx,cy,0,cx,cy,coreR)
+  core.addColorStop(0,_va(0.6+amp*0.4))
+  core.addColorStop(1,_va(0))
+  ctx.fillStyle=core
+  ctx.beginPath(); ctx.arc(cx,cy,coreR,0,Math.PI*2); ctx.fill()
+
+  ctx.fillStyle=_va(0.2+amp*0.3)
+  ctx.font='6px Courier New'
+  ctx.textAlign='center'
+  ctx.fillText('◈',cx,cy+2)
+}
+
+// ── DOT SPHERE ──
+function drawDotSphere(W,H,amp) {
+  const cx=W/2, cy=H/2, baseR=70, t=Date.now()
+  const rotY=t*0.0004, rotX=0.3+amp*0.25
+
+  const rendered = dots.map(d => {
+    const phi   = d.basePhi+rotY*d.speed*3000+d.phase
+    const theta = d.theta+Math.sin(t*d.speed+d.phase)*0.12
+    const r     = baseR+(vizMode==='speaking'?amp*20*Math.sin(d.phase+t*0.002):amp*5)
+    const x3=r*Math.sin(theta)*Math.cos(phi)
+    const y3=r*Math.sin(theta)*Math.sin(phi)
+    const z3=r*Math.cos(theta)
+    const xr=x3*Math.cos(rotY)+z3*Math.sin(rotY)
+    const zr=-x3*Math.sin(rotY)+z3*Math.cos(rotY)
+    const yr=y3*Math.cos(rotX)-zr*Math.sin(rotX)
+    const zr2=y3*Math.sin(rotX)+zr*Math.cos(rotX)
+    const fov=280, scale=fov/(fov+zr2)
+    const px=cx+xr*scale, py=cy+yr*scale
+    const depth=(zr2+baseR*1.5)/(baseR*3)
+    return { px, py, depth, size:d.size*scale, norm:depth }
+  }).sort((a,b)=>a.depth-b.depth)
+
+  const sg=ctx.createRadialGradient(cx,cy,baseR*0.5,cx,cy,baseR*1.1)
+  sg.addColorStop(0,_va(0))
+  sg.addColorStop(1,_va(0.03+amp*0.07))
+  ctx.fillStyle=sg
+  ctx.beginPath(); ctx.arc(cx,cy,baseR*1.1,0,Math.PI*2); ctx.fill()
+
+  for (const d of rendered) {
+    const alpha=0.15+d.norm*0.85
+    const sz=Math.max(d.size*(vizMode==='speaking'?1+amp*0.8:1),0.4)
+    if (d.norm>0.7) { ctx.shadowColor=_va((d.norm-0.7)*0.8); ctx.shadowBlur=4 }
+    ctx.fillStyle=_va(alpha)
+    ctx.beginPath(); ctx.arc(d.px,d.py,sz,0,Math.PI*2); ctx.fill()
+    ctx.shadowBlur=0
+  }
+
+  ctx.strokeStyle=_va(0.06+amp*0.08)
+  ctx.lineWidth=0.5
+  ctx.beginPath(); ctx.arc(cx,cy,baseR,0,Math.PI*2); ctx.stroke()
+}
+
+// ── Round rect helper ──
+function roundRect(ctx,x,y,w,h,r) {
+  if (h<0){y+=h;h=-h}
+  if (h<r*2) r=h/2
+  ctx.beginPath()
+  ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.arcTo(x+w,y,x+w,y+r,r)
+  ctx.lineTo(x+w,y+h-r); ctx.arcTo(x+w,y+h,x+w-r,y+h,r)
+  ctx.lineTo(x+r,y+h); ctx.arcTo(x,y+h,x,y+h-r,r)
+  ctx.lineTo(x,y+r); ctx.arcTo(x,y,x+r,y,r)
+  ctx.closePath()
+}
+
+draw()
+</script>
+</body>
+</html>

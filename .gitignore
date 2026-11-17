@@ -1,0 +1,19 @@
+models/
+runtime/
+ollama/
+logs/
+whisper/
+__MACOSX/
+._*
+node_modules/
+node_modules_mac/
+node_modules_win/
+app/Electron.app/
+Launch TANNIS.app/
+*.gguf
+*.safetensors
+*.bin
+*.exe
+*.dll
+*.dylib
+*.zip

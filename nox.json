@@ -1,0 +1,19 @@
+{
+  "server": { "host": "127.0.0.1", "port": 8080, "engine_port": 8081 },
+  "model": {
+    "paths": [
+      "C:\\NOX\\models\\Qwen3-8B-Q4_K_M.gguf",
+      "models/Qwen3-8B-Q4_K_M.gguf"
+    ],
+    "ctx": 16384,
+    "gpu_layers": 99,
+    "no_mmap": false,
+    "extra_args": []
+  },
+  "sampling": {
+    "temp": 0.7, "top_p": 0.9, "top_k": 40,
+    "min_p": 0.05, "repeat_penalty": 1.05, "max_tokens": 4096
+  },
+  "policy": { "mode": "yolo", "scope_roots": ["work"], "scope_cidrs": [], "allowed_bins": [] },
+  "ui": { "accent": "#00d4aa", "airgap": false }
+}

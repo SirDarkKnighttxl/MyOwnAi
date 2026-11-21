@@ -1,0 +1,143 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>NOX</title>
+<link rel="icon" href="data:,">
+<style>
+:root{--bg:#0a0a12;--sf:#0d0d1a;--in:#12121f;--ac:#00d4aa;--tx:#e0e0e0;--dm:#ffffff55;--bd:#ffffff12}
+*{box-sizing:border-box;margin:0}
+body{background:var(--bg);color:var(--tx);font:15px/1.65 ui-monospace,Consolas,monospace;height:100vh;display:flex;flex-direction:column}
+header{padding:9px 16px;border-bottom:1px solid var(--bd);display:flex;gap:14px;align-items:center;font-size:12px}
+#dot{width:8px;height:8px;border-radius:50%;background:#444}
+#dot.on{background:var(--ac);box-shadow:0 0 8px var(--ac)}
+#log{flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:16px}
+.msg{max-width:88%;user-select:text;position:relative}
+.u{align-self:flex-end;background:var(--in);padding:9px 12px;border-radius:8px;white-space:pre-wrap}
+.a{align-self:flex-start;border-left:2px solid var(--ac);padding-left:13px;width:88%}
+.a p{margin:0 0 9px}.a p:last-child{margin:0}
+.a h1,.a h2,.a h3{font-size:15px;margin:14px 0 6px;color:var(--ac)}
+.a ul{margin:0 0 9px;padding-left:20px}.a li{margin:2px 0}
+.a code{background:#ffffff10;padding:1px 5px;border-radius:3px;font-size:13px}
+.a pre{background:#00000055;border:1px solid var(--bd);padding:11px;border-radius:6px;overflow-x:auto;margin:9px 0}
+.a pre code{background:none;padding:0;font-size:13px;line-height:1.5}
+.copy{position:absolute;top:-2px;right:-6px;background:#ffffff10;border:1px solid var(--bd);color:var(--dm);font:11px ui-monospace;padding:2px 7px;border-radius:4px;cursor:pointer;opacity:0;transition:.15s}
+.msg:hover .copy{opacity:1}
+details{margin:0 0 10px}summary{cursor:pointer;color:var(--dm);font-size:12px}
+.think{color:#ffffff44;font-size:13px;white-space:pre-wrap;border-left:1px solid #ffffff22;padding-left:9px;margin:6px 0}
+footer{padding:12px;border-top:1px solid var(--bd);display:flex;gap:8px}
+textarea{flex:1;background:var(--in);border:1px solid var(--bd);color:var(--tx);padding:10px;border-radius:6px;font:inherit;resize:none;height:64px;outline:none}
+textarea:focus{border-color:#ffffff30}
+button{background:var(--ac);color:#000;border:0;padding:0 18px;border-radius:6px;font:inherit;font-weight:700;cursor:pointer}
+button:disabled{opacity:.4;cursor:default}
+a{color:var(--ac)}
+</style></head><body>
+<header><span id="dot"></span><b>NOX</b><span id="st">starting</span>
+<label style="color:var(--dm)"><input type="checkbox" id="think" checked> think</label>
+<span style="margin-left:auto"><a href="#" id="reset">clear</a></span></header>
+<div id="log"></div>
+<footer><textarea id="in" placeholder="Enter to send · Shift+Enter for newline"></textarea><button id="go">RUN</button></footer>
+<script>
+const log=document.getElementById('log'), inp=document.getElementById('in'),
+      go=document.getElementById('go'), dot=document.getElementById('dot'),
+      st=document.getElementById('st'), thinkBox=document.getElementById('think');
+let hist=[], busy=false;
+
+const esc=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+function md(src){
+  const blocks=[];
+  let s=src.replace(/```[\w-]*\n?([\s\S]*?)```/g,(m,code)=>{
+    blocks.push('<pre><code>'+esc(code)+'</code></pre>'); return '\u0000'+(blocks.length-1)+'\u0000';
+  });
+  s=esc(s);
+  s=s.replace(/`([^`\n]+)`/g,'<code>$1</code>');
+  s=s.replace(/\*\*([^*\n]+)\*\*/g,'<strong>$1</strong>');
+  s=s.replace(/^#{6} (.*)$/gm,'<h3>$1</h3>').replace(/^#{5} (.*)$/gm,'<h3>$1</h3>')
+     .replace(/^#{4} (.*)$/gm,'<h3>$1</h3>').replace(/^#{3} (.*)$/gm,'<h3>$1</h3>')
+     .replace(/^#{2} (.*)$/gm,'<h2>$1</h2>').replace(/^# (.*)$/gm,'<h1>$1</h1>');
+  s=s.replace(/^[ \t]*[-*] (.*)$/gm,'<li>$1</li>');
+  s=s.replace(/(?:^|\n)((?:<li>.*<\/li>\n?)+)/g,(m,list)=>'\n<ul>'+list+'</ul>');
+  s=s.replace(/\u0000(\d+)\u0000/g,(m,i)=>blocks[+i]);
+  return s.split(/\n{2,}/).map(p=>p.trim()).filter(Boolean).map(p=>/^<(h\d|ul|pre)/.test(p)?p:'<p>'+p.replace(/\n/g,'<br>')+'</p>').join('');
+}
+
+async function poll(){
+  try{
+    const s=await (await fetch('/api/status')).json();
+    dot.className=s.ready?'on':''; st.textContent=s.ready?'ready · '+s.mode:(s.error||'loading');
+  }catch(e){ dot.className=''; st.textContent='daemon down'; }
+}
+setInterval(poll,1500); poll();
+
+function bubble(cls,text){
+  const d=document.createElement('div'); d.className='msg '+cls;
+  d.textContent=text; log.appendChild(d); log.scrollTop=log.scrollHeight; return d;
+}
+
+async function send(){
+  const text=inp.value.trim(); if(!text||busy) return;
+  busy=true; go.disabled=true; inp.value='';
+  bubble('u',text); hist.push({role:'user',content:text});
+  const out=bubble('a','');
+  const raw=document.createElement('div'); out.appendChild(raw);
+  let acc='', done=false;
+
+  const btn=document.createElement('button');
+  btn.className='copy'; btn.textContent='copy';
+  btn.onclick=()=>{navigator.clipboard.writeText(acc); btn.textContent='copied';
+                   setTimeout(()=>btn.textContent='copy',1200);};
+  out.appendChild(btn);
+
+  try{
+    const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({messages:hist,think:thinkBox.checked})});
+    if(!r.ok){ const t=await r.text(); let m=t; try{ m=JSON.parse(t).detail; }catch(e){} throw new Error(m); }
+    const rd=r.body.getReader(), dec=new TextDecoder();
+    for(;;){
+      const {done:d,value}=await rd.read(); if(d) break;
+      for(const line of dec.decode(value,{stream:true}).split('\n')){
+        if(!line.startsWith('data:')) continue;
+        const p=line.slice(5).trim(); if(p==='[DONE]') continue;
+        try{ const j=JSON.parse(p);
+          if(j.nox){
+            const e=j.nox;
+            if(e.tool){
+              const t=document.createElement('div');
+              t.className='think';
+              t.textContent='▸ '+e.tool+' '+JSON.stringify(e.args).slice(0,160);
+              out.insertBefore(t,btn);
+            } else if(e.tool_result){
+              const t=document.createElement('div');
+              t.className='think';
+              t.style.color=e.ok?'#00d4aa88':'#ff6b6b99';
+              t.textContent=(e.ok?'✓ ':'✗ ')+e.tool_result.slice(0,200);
+              out.insertBefore(t,btn);
+            }
+            log.scrollTop=log.scrollHeight;
+            continue;
+          }
+          const t=j.choices?.[0]?.delta?.content||''; if(t){acc+=t;raw.textContent=acc;log.scrollTop=log.scrollHeight;}
+        }catch(e){}
+      }
+    }
+    done=true;
+    const i=acc.indexOf('</think>');
+    out.removeChild(raw);
+    if(i===-1){ const b=document.createElement('div'); b.innerHTML=md(acc); out.insertBefore(b,btn); }
+    else{
+      const think=acc.slice(0,acc.indexOf('</think>')).replace(/^\s*think>\s*/,'').trim();
+      const det=document.createElement('details');
+      det.innerHTML='<summary>thinking</summary>';
+      const tp=document.createElement('div'); tp.className='think'; tp.textContent=think;
+      det.appendChild(tp); out.insertBefore(det,btn);
+      const b=document.createElement('div'); b.innerHTML=md(acc.slice(i+8).trim());
+      out.insertBefore(b,btn);
+    }
+    hist.push({role:'assistant',content:acc});
+  }catch(e){ raw.textContent='[error] '+e.message; }
+  busy=false; go.disabled=false; inp.focus(); log.scrollTop=log.scrollHeight;
+}
+go.onclick=send;
+inp.onkeydown=e=>{
+  if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); send(); }
+};
+document.getElementById('reset').onclick=e=>{e.preventDefault();hist=[];log.innerHTML='';inp.focus();};
+inp.focus();
+</script></body></html>

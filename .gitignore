@@ -1,19 +1,30 @@
+# Large, generated, and machine-local runtime data
+bin/
 models/
-runtime/
-ollama/
+work/
 logs/
-whisper/
-__MACOSX/
-._*
-node_modules/
-node_modules_mac/
-node_modules_win/
-app/Electron.app/
-Launch TANNIS.app/
+nox.db
+runtime.json
+runtime/
+
+# Python environments and caches
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+python/
+
+# Model and training artifacts
 *.gguf
 *.safetensors
 *.bin
-*.exe
-*.dll
-*.dylib
+
+# Platform and editor noise
+._*
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Downloaded archives
 *.zip

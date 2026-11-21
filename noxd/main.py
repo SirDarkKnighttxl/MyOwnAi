@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import pathlib
 import threading
@@ -9,7 +10,7 @@ import threading
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
-from . import agent, rag, store
+from . import agent, models as model_manager, rag, store
 from .engine import Engine
 from .policy import Policy
 
@@ -23,6 +24,8 @@ MODEL_ROLES = {"stock", "ablit", "trained"}
 app = FastAPI(title="NOX")
 engine: Engine | None = None
 policy: Policy | None = None
+model_lock = threading.RLock()
+engine_use_lock = asyncio.Lock()
 
 
 def cfg() -> dict:
@@ -59,14 +62,16 @@ def boot() -> None:
 
 def _bring_up() -> None:
     assert engine is not None
-    engine.start()
-    engine.wait_ready()
+    with model_lock:
+        engine.start()
+        engine.wait_ready()
 
 
 @app.on_event("shutdown")
 def halt() -> None:
     if engine:
-        engine.stop()
+        with model_lock:
+            engine.stop()
 
 
 @app.get("/")
@@ -82,6 +87,94 @@ def status() -> dict:
             "role": engine.cfg["model"].get("role", "stock"),
             "model": engine.model_path,
             "log": engine.log_tail(6) if engine.error else ""}
+
+
+def _models_payload() -> dict:
+    assert engine is not None
+    loaded = engine.model_path if engine.running else None
+    return {
+        "models": model_manager.discover(engine.cfg, loaded),
+        "loaded": loaded,
+    }
+
+
+@app.get("/api/models")
+def get_models() -> dict:
+    return _models_payload()
+
+
+def _write_config(config: dict) -> None:
+    temporary = CONFIG.with_suffix(CONFIG.suffix + ".tmp")
+    temporary.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(CONFIG)
+
+
+def _load_model(candidate: dict) -> None:
+    assert engine is not None
+    with model_lock:
+        base = json.loads(CONFIG.read_text(encoding="utf-8"))
+        old_engine_cfg = copy.deepcopy(engine.cfg)
+        was_running = engine.running
+
+        selected = candidate["config_path"]
+        selected_key = model_manager.path_key(candidate["path"])
+        remaining = [
+            raw for raw in base["model"].get("paths", [])
+            if model_manager.path_key(model_manager.resolve(raw)) != selected_key
+        ]
+        base["model"]["paths"] = [selected] + remaining
+        base["model"]["role"] = candidate["role"]
+
+        engine.stop()
+        engine.cfg["model"] = copy.deepcopy(base["model"])
+        engine.error = None
+        engine.start()
+        if engine.wait_ready():
+            try:
+                _write_config(base)
+                return
+            except OSError as exc:
+                engine.error = f"could not persist model selection: {exc}"
+
+        failure = engine.error or "model failed to start"
+        engine.stop()
+        engine.cfg = old_engine_cfg
+        if was_running:
+            engine.start()
+            engine.wait_ready()
+        raise RuntimeError(f"{failure}; previous model restored")
+
+
+def _unload_model() -> None:
+    assert engine is not None
+    with model_lock:
+        engine.stop()
+        engine.model_path = None
+        engine.error = None
+
+
+@app.post("/api/models")
+async def change_model(req: Request) -> dict:
+    assert engine is not None
+    body = await req.json()
+    action = body.get("action")
+    async with engine_use_lock:
+        if action == "unload":
+            await asyncio.to_thread(_unload_model)
+        elif action == "load":
+            requested = body.get("path", "")
+            candidate = model_manager.select(engine.cfg, requested) if requested else None
+            if candidate is None:
+                raise HTTPException(404, "model is not in a configured model directory")
+            if not candidate["loadable"]:
+                raise HTTPException(400, "embedding models cannot be loaded as chat models")
+            try:
+                await asyncio.to_thread(_load_model, candidate)
+            except RuntimeError as exc:
+                raise HTTPException(500, str(exc)) from exc
+        else:
+            raise HTTPException(400, "action must be load or unload")
+    return {"ok": True, **_models_payload()}
 
 
 @app.get("/api/sessions")
@@ -173,7 +266,10 @@ async def chat(req: Request) -> StreamingResponse:
 
     async def drive() -> None:
         try:
-            text = await agent.run(policy, url, full, sampling, queue.put_nowait, think)
+            async with engine_use_lock:
+                if not engine.ready:
+                    raise RuntimeError(engine.error or "engine not ready")
+                text = await agent.run(policy, url, full, sampling, queue.put_nowait, think)
             await queue.put({"final": text})
         except Exception as exc:
             await queue.put({"final": f"[error] {exc}"})

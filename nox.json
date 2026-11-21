@@ -1,5 +1,9 @@
 {
-  "server": { "host": "127.0.0.1", "port": 8080, "engine_port": 8081 },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8080,
+    "engine_port": 8081
+  },
   "model": {
     "role": "ablit",
     "paths": [
@@ -11,15 +15,32 @@
     "gpu_layers": 99,
     "no_mmap": false,
     "extra_args": [
-      "-fa", "on",
-      "-ctk", "q8_0",
-      "-ctv", "q8_0"
+      "-fa",
+      "on",
+      "-ctk",
+      "q8_0",
+      "-ctv",
+      "q8_0"
     ]
   },
   "sampling": {
-    "temp": 0.7, "top_p": 0.9, "top_k": 40,
-    "min_p": 0.05, "repeat_penalty": 1.05, "max_tokens": 4096
+    "temp": 0.7,
+    "top_p": 0.9,
+    "top_k": 40,
+    "min_p": 0.05,
+    "repeat_penalty": 1.05,
+    "max_tokens": 4096
   },
-  "policy": { "mode": "yolo", "scope_roots": ["work"], "scope_cidrs": [], "allowed_bins": [] },
-  "ui": { "accent": "#00d4aa", "airgap": false }
+  "policy": {
+    "mode": "yolo",
+    "scope_roots": [
+      "work"
+    ],
+    "scope_cidrs": [],
+    "allowed_bins": []
+  },
+  "ui": {
+    "accent": "#00d4aa",
+    "airgap": false
+  }
 }

@@ -92,6 +92,8 @@ class Engine:
             )
         except OSError as exc:
             self.error = str(exc)
+        finally:
+            handle.close()
 
     def stop(self) -> None:
         if self.proc and self.proc.poll() is None:
@@ -100,6 +102,7 @@ class Engine:
                 self.proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
+                self.proc.wait(timeout=10)
         self.proc = None
 
     def wait_ready(self, timeout: float = 240.0) -> bool:

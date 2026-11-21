@@ -11,6 +11,8 @@ header{padding:9px 16px;border-bottom:1px solid var(--bd);display:flex;gap:14px;
 #role{padding:1px 7px;border:1px solid var(--bd);border-radius:999px;color:#b8c0cc;text-transform:uppercase;letter-spacing:.08em}
 #role[data-role="ablit"]{color:#ffb454;border-color:#ffb45455}
 #role[data-role="trained"]{color:var(--ac);border-color:#00d4aa55}
+#model-select{max-width:310px;background:var(--in);border:1px solid var(--bd);color:var(--tx);padding:3px 24px 3px 7px;border-radius:4px;font:inherit}
+#model-select:disabled{opacity:.5}
 #log{flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:16px}
 .msg{max-width:88%;user-select:text;position:relative}
 .u{align-self:flex-end;background:var(--in);padding:9px 12px;border-radius:8px;white-space:pre-wrap}
@@ -32,7 +34,8 @@ button{background:var(--ac);color:#000;border:0;padding:0 18px;border-radius:6px
 button:disabled{opacity:.4;cursor:default}
 a{color:var(--ac)}
 </style></head><body>
-<header><span id="dot"></span><b>NOX</b><span id="role" data-role="ablit">ablit</span><span id="st">starting</span>
+<header><span id="dot"></span><b>NOX</b><span id="role" data-role="ablit">ablit</span>
+<select id="model-select" aria-label="Active model"><option>discovering models</option></select><span id="st">starting</span>
 <label style="color:var(--dm)"><input type="checkbox" id="think" checked> think</label>
 <span style="margin-left:auto"><a href="#" id="reset">clear</a></span></header>
 <div id="log"></div>
@@ -41,6 +44,7 @@ a{color:var(--ac)}
 const log=document.getElementById('log'), inp=document.getElementById('in'),
       go=document.getElementById('go'), dot=document.getElementById('dot'),
       st=document.getElementById('st'), roleBadge=document.getElementById('role'),
+      modelSelect=document.getElementById('model-select'),
       thinkBox=document.getElementById('think');
 let hist=[], busy=false;
 
@@ -80,6 +84,33 @@ async function poll(){
   }catch(e){ dot.className=''; st.textContent='daemon down'; }
 }
 setInterval(poll,1500); poll();
+
+async function refreshModels(){
+  const data=await (await fetch('/api/models')).json();
+  modelSelect.innerHTML='';
+  const unloaded=document.createElement('option');
+  unloaded.value=''; unloaded.textContent='unloaded'; modelSelect.appendChild(unloaded);
+  for(const model of data.models){
+    const option=document.createElement('option');
+    option.value=model.path;
+    option.textContent=(model.role?'['+model.role.toUpperCase()+'] ':'')+model.name+' · '+model.location;
+    option.disabled=!model.loadable;
+    option.selected=model.active;
+    modelSelect.appendChild(option);
+  }
+  if(!data.loaded) modelSelect.value='';
+}
+
+modelSelect.onchange=async()=>{
+  modelSelect.disabled=true; st.textContent=modelSelect.value?'switching model':'unloading model';
+  try{
+    const body=modelSelect.value?{action:'load',path:modelSelect.value}:{action:'unload'};
+    const response=await fetch('/api/models',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!response.ok){const data=await response.json();throw new Error(data.detail||'model switch failed');}
+  }catch(error){st.textContent=error.message;}
+  await refreshModels(); await poll(); modelSelect.disabled=false;
+};
+refreshModels().catch(error=>{st.textContent=error.message;});
 
 function bubble(cls,text){
   const d=document.createElement('div'); d.className='msg '+cls;

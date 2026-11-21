@@ -19,6 +19,9 @@ def conn() -> sqlite3.Connection:
             content TEXT, created REAL);
         CREATE TABLE IF NOT EXISTS chunks(
             id INTEGER PRIMARY KEY, path TEXT, text TEXT, vec TEXT);
+        CREATE TABLE IF NOT EXISTS index_state(
+            id INTEGER PRIMARY KEY CHECK (id = 1), next_candidate INTEGER,
+            skipped INTEGER, scope TEXT, updated REAL);
         CREATE INDEX IF NOT EXISTS idx_msg_sess ON messages(session);
     """)
     return c

@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import time
+from contextlib import closing
 
 import httpx
 
@@ -18,6 +19,11 @@ BIN = ROOT / "bin" / ("llama-server.exe" if sys.platform == "win32" else "llama-
 EMBED = ROOT / "models" / "nomic-embed-text-v1.5.Q4_K_M.gguf"
 PORT = 8095
 MIN_SCORE = 0.60
+RETRY_DELAYS = (0.5, 1.5)
+MAX_CONSEC_FAIL = 20
+LONG_CHUNK = 4000
+PROGRESS_EVERY = 25
+_sleep = time.sleep
 
 TEXT_EXT = {".md", ".txt", ".rst", ".conf", ".cfg", ".yaml", ".yml", ".json"}
 SKIP = {".git", "node_modules", "__pycache__", ".venv", "dist", "build"}
@@ -72,59 +78,144 @@ def chunk(text: str, size: int = 900, overlap: int = 120) -> list[str]:
     return out
 
 
-def index(root: pathlib.Path, limit: int = 1500, only: list[str] | None = None) -> dict:
-    if not ensure():
-        return {"ok": False, "error": "embedding model unavailable"}
+def embed_retry(text: str, attempts: int = 3) -> list[float] | None:
+    """Embed with backoff: try, wait 0.5s, try, wait 1.5s, try, then give up."""
+    for attempt in range(attempts):
+        vec = embed(text)
+        if vec:
+            return vec
+        if attempt < attempts - 1:
+            _sleep(RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)])
+    return None
 
+
+def _files(root: pathlib.Path, only: list[str] | None) -> list[pathlib.Path]:
     files = []
     for p in root.rglob("*"):
         if not p.is_file() or p.suffix.lower() not in TEXT_EXT:
             continue
-        if SKIP & set(p.parts):
+        try:
+            rel = p.relative_to(root)
+        except ValueError:
             continue
-        if only:
-            try:
-                rel = p.relative_to(root).parts[0]
-            except ValueError:
-                continue
-            if rel not in only:
-                continue
+        if SKIP & set(rel.parts):
+            continue
+        if only and rel.parts[0] not in only:
+            continue
         try:
             if p.stat().st_size > 400_000:
                 continue
         except OSError:
             continue
         files.append(p)
+    # Stable order so a candidate number means the same chunk on every run.
+    files.sort(key=lambda f: f.relative_to(root).as_posix())
+    return files
 
+
+def _candidates(files: list[pathlib.Path]):
+    """Yield (number, path, piece) for every indexable chunk, in a fixed order."""
+    n = 0
+    for p in files:
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for piece in chunk(text):
+            if len(piece.strip()) < 80:
+                continue
+            yield n, p, piece
+            n += 1
+
+
+def _state(c) -> dict | None:
+    row = c.execute(
+        "SELECT next_candidate, skipped, scope FROM index_state WHERE id=1").fetchone()
+    return dict(row) if row else None
+
+
+def _save_state(c, next_candidate: int, skipped: int, scope: str) -> None:
+    c.execute(
+        "INSERT OR REPLACE INTO index_state(id, next_candidate, skipped, scope, updated) "
+        "VALUES(1,?,?,?,?)", (next_candidate, skipped, scope, time.time()))
+
+
+def index(root: pathlib.Path, limit: int = 1500, only: list[str] | None = None,
+          resume: bool = False) -> dict:
+    """Embed corpus chunks into SQLite.
+
+    The resume cursor (next_candidate) lives in index_state and is advanced in
+    the same transaction as the rows it covers. Candidates that fail every
+    retry are skipped; their cursor advance is committed with the next
+    successful insert (or at a clean finish), so an abort or interrupt retries
+    them instead of losing them. `limit` caps chunks inserted by this run.
+    """
+    if not ensure():
+        return {"ok": False, "error": "embedding model unavailable"}
+
+    scope = ",".join(sorted(only)) if only else "*"
+    files = _files(root, only)
     print(f"{len(files)} candidate files", flush=True)
-    done, fails = 0, 0
-    with conn() as c:
-        c.execute("DELETE FROM chunks")
-        for p in files:
+
+    with closing(conn()) as c:
+        state = _state(c) if resume else None
+        if resume and state and state["scope"] != scope:
+            return {"ok": False, "error": f"resume scope mismatch: saved {state['scope']!r}, "
+                                          f"requested {scope!r}; rerun without resume"}
+        if not resume or not state:
+            c.execute("DELETE FROM chunks")
+            c.execute("DELETE FROM index_state")
+            _save_state(c, 0, 0, scope)
+            c.commit()
+            state = {"next_candidate": 0, "skipped": 0}
+
+        start = state["next_candidate"]
+        committed_next, committed_skipped = start, state["skipped"]
+        pending_next, pending_skipped = start, committed_skipped
+        done, consec = 0, 0
+        aborted = False
+        if resume and start:
+            print(f"resuming at candidate {start + 1}", flush=True)
+
+        for n, p, piece in _candidates(files):
+            if n < start:
+                continue
             if done >= limit:
                 break
-            try:
-                text = p.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            for piece in chunk(text):
-                if len(piece.strip()) < 80:
-                    continue
-                vec = embed(piece)
-                if not vec:
-                    fails += 1
-                    if fails > 12:
-                        return {"ok": False, "error": "embedding server died", "chunks": done}
-                    continue
-                fails = 0
-                c.execute("INSERT INTO chunks(path, text, vec) VALUES(?,?,?)",
-                          (str(p), piece, json.dumps(vec)))
-                done += 1
-                if done % 25 == 0:
-                    print(f"  {done} chunks", flush=True)
-                if done >= limit:
+            if len(piece) > LONG_CHUNK:
+                print(f"  long chunk {len(piece)} chars: {p} #{n + 1}", flush=True)
+            vec = embed_retry(piece)
+            if not vec:
+                consec += 1
+                pending_skipped += 1
+                pending_next = n + 1
+                print(f"  skip {p} #{n + 1} (consec={consec})", flush=True)
+                if consec >= MAX_CONSEC_FAIL:
+                    aborted = True
                     break
-    return {"ok": True, "chunks": done, "files": len(files)}
+                continue
+            consec = 0
+            pending_next = n + 1
+            c.execute("INSERT INTO chunks(path, text, vec) VALUES(?,?,?)",
+                      (str(p), piece, json.dumps(vec)))
+            _save_state(c, pending_next, pending_skipped, scope)
+            c.commit()
+            committed_next, committed_skipped = pending_next, pending_skipped
+            done += 1
+            if done % PROGRESS_EVERY == 0:
+                print(f"  {done} chunks done={done} skipped={committed_skipped} "
+                      f"consec={consec}", flush=True)
+
+        if aborted:
+            # Leave the failing run uncommitted so a resume retries it.
+            return {"ok": False, "error": "embedding server died", "chunks": done,
+                    "skipped": committed_skipped, "next_candidate": committed_next,
+                    "consec": consec}
+        if (pending_next, pending_skipped) != (committed_next, committed_skipped):
+            _save_state(c, pending_next, pending_skipped, scope)
+            c.commit()
+        return {"ok": True, "chunks": done, "skipped": pending_skipped,
+                "next_candidate": pending_next, "files": len(files)}
 
 
 def search(query: str, k: int = 6) -> list[dict]:

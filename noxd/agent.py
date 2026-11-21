@@ -12,6 +12,25 @@ MAX_STEPS = 12
 SCRATCH = pathlib.Path(__file__).resolve().parent.parent / "work" / "scratchpad.md"
 
 
+def _response_text(message: dict, think: bool) -> str:
+    content = message.get("content") or ""
+    reasoning = message.get("reasoning_content") or ""
+
+    if not think:
+        # Some models can emit a raw reasoning suffix even when their template
+        # was prefilled for no-think mode. Keep the UI contract tag-free.
+        if "</think>" in content:
+            return content.rsplit("</think>", 1)[1].lstrip()
+        if "<think>" in content:
+            return content.split("<think>", 1)[0].rstrip()
+        return content
+
+    if reasoning and "</think>" not in content:
+        answer = f"\n\n{content.lstrip()}" if content else ""
+        return f"<think>\n{reasoning.strip()}\n</think>{answer}"
+    return content
+
+
 async def run(policy, base_url: str, messages: list, sampling: dict, on_event, think: bool = True) -> str:
     if SCRATCH.exists():
         plan = SCRATCH.read_text(encoding="utf-8", errors="replace")[:4000]
@@ -31,6 +50,8 @@ async def run(policy, base_url: str, messages: list, sampling: dict, on_event, t
         "tools": tools.SCHEMA,
         "chat_template_kwargs": {"enable_thinking": think},
     }
+    if not think:
+        payload["reasoning_effort"] = "none"
 
     async with httpx.AsyncClient(timeout=600) as client:
         for step in range(MAX_STEPS):
@@ -40,7 +61,7 @@ async def run(policy, base_url: str, messages: list, sampling: dict, on_event, t
             calls = msg.get("tool_calls") or []
 
             if not calls:
-                return msg.get("content") or ""
+                return _response_text(msg, think)
 
             payload["messages"].append(msg)
             for call in calls:

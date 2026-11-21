@@ -58,6 +58,16 @@ function md(src){
   return s.split(/\n{2,}/).map(p=>p.trim()).filter(Boolean).map(p=>/^<(h\d|ul|pre)/.test(p)?p:'<p>'+p.replace(/\n/g,'<br>')+'</p>').join('');
 }
 
+function splitThinking(src){
+  const end=src.indexOf('</think>');
+  if(end===-1) return null;
+  const prefix=src.slice(0,end), open=prefix.indexOf('<think>');
+  return {
+    thinking:prefix.slice(open===-1?0:open+7).trim(),
+    answer:src.slice(end+8).trim()
+  };
+}
+
 async function poll(){
   try{
     const s=await (await fetch('/api/status')).json();
@@ -118,16 +128,15 @@ async function send(){
       }
     }
     done=true;
-    const i=acc.indexOf('</think>');
+    const parsed=splitThinking(acc);
     out.removeChild(raw);
-    if(i===-1){ const b=document.createElement('div'); b.innerHTML=md(acc); out.insertBefore(b,btn); }
+    if(!parsed){ const b=document.createElement('div'); b.innerHTML=md(acc); out.insertBefore(b,btn); }
     else{
-      const think=acc.slice(0,acc.indexOf('</think>')).replace(/^\s*think>\s*/,'').trim();
       const det=document.createElement('details');
       det.innerHTML='<summary>thinking</summary>';
-      const tp=document.createElement('div'); tp.className='think'; tp.textContent=think;
+      const tp=document.createElement('div'); tp.className='think'; tp.textContent=parsed.thinking;
       det.appendChild(tp); out.insertBefore(det,btn);
-      const b=document.createElement('div'); b.innerHTML=md(acc.slice(i+8).trim());
+      const b=document.createElement('div'); b.innerHTML=md(parsed.answer);
       out.insertBefore(b,btn);
     }
     hist.push({role:'assistant',content:acc});

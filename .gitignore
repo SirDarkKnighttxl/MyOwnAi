@@ -1,5 +1,6 @@
 # Large, generated, and machine-local runtime data
 bin/
+bin-*/
 models/
 work/
 logs/

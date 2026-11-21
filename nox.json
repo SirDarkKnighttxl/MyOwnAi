@@ -8,7 +8,11 @@
     "ctx": 16384,
     "gpu_layers": 99,
     "no_mmap": false,
-    "extra_args": []
+    "extra_args": [
+      "-fa", "on",
+      "-ctk", "q8_0",
+      "-ctv", "q8_0"
+    ]
   },
   "sampling": {
     "temp": 0.7, "top_p": 0.9, "top_k": 40,

@@ -78,7 +78,7 @@ class Engine:
             "-np", "1",
         ]
         if m.get("no_mmap"):
-            args.append("--no-mmap")
+            args.extend(["--load-mode", "none"])
         args.extend(m.get("extra_args", []))
 
         LOG.parent.mkdir(parents=True, exist_ok=True)

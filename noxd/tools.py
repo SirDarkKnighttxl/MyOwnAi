@@ -5,8 +5,10 @@ import html
 import os
 import pathlib
 import re as _re
+import signal
 import subprocess
 import sys
+import tempfile
 
 import httpx
 
@@ -70,6 +72,13 @@ SCHEMA = [
             "cwd": {"type": "string"},
             "timeout": {"type": "integer"},
         }, "required": ["command"]}}},
+    {"type": "function", "function": {
+        "name": "run_python",
+        "description": "Run Python code from a temporary file under work/. Captures both streams and enforces a process-tree timeout.",
+        "parameters": {"type": "object", "properties": {
+            "code": {"type": "string"},
+            "timeout": {"type": "number", "description": "seconds, 0.1-300"},
+        }, "required": ["code"]}}},
     {"type": "function", "function": {
         "name": "git_status",
         "description": "Show branch and working-tree status for a Git repository.",
@@ -358,6 +367,104 @@ def shell(policy, args: dict) -> dict:
     }
 
 
+def _kill_process_tree(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            check=False,
+        )
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
+def run_python(policy, args: dict) -> dict:
+    code = args.get("code")
+    timeout = args.get("timeout", 30)
+    if not isinstance(code, str):
+        return _deny("code must be a string")
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not 0.1 <= timeout <= 300
+    ):
+        return _deny("timeout must be between 0.1 and 300 seconds")
+
+    verdict = policy.check_path(str(WORK.resolve()))
+    if not verdict:
+        return _deny(verdict.reason)
+    verdict = policy.check_command(pathlib.Path(sys.executable).name)
+    if not verdict:
+        return _deny(verdict.reason)
+
+    WORK.mkdir(parents=True, exist_ok=True)
+    path = None
+    process = None
+    try:
+        descriptor, raw_path = tempfile.mkstemp(
+            prefix="nox-python-", suffix=".py", dir=WORK
+        )
+        path = pathlib.Path(raw_path)
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(code)
+
+        windows_flags = (
+            subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+            if sys.platform == "win32" else 0
+        )
+        process = subprocess.Popen(
+            [sys.executable, str(path)],
+            cwd=str(WORK),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="replace",
+            shell=False,
+            creationflags=windows_flags,
+            start_new_session=sys.platform != "win32",
+        )
+        try:
+            stdout, stderr = process.communicate(timeout=float(timeout))
+            timed_out = False
+        except subprocess.TimeoutExpired:
+            _kill_process_tree(process)
+            stdout, stderr = process.communicate()
+            timed_out = True
+
+        result = {
+            "ok": process.returncode == 0 and not timed_out,
+            "code": process.returncode,
+            "stdout": stdout[:40000],
+            "stderr": stderr[:20000],
+            "timed_out": timed_out,
+        }
+        if timed_out:
+            result["error"] = f"timeout after {timeout}s; process tree killed"
+        return result
+    except OSError as exc:
+        if process is not None:
+            _kill_process_tree(process)
+        return _deny(str(exc))
+    finally:
+        if path is not None:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+
 def _run_git(
     cwd: pathlib.Path,
     args: list[str],
@@ -557,6 +664,7 @@ HANDLERS = {
     "read_file": read_file, "write_file": write_file,
     "edit_file": edit_file, "apply_patch": apply_patch,
     "list_dir": list_dir, "grep": grep, "shell": shell,
+    "run_python": run_python,
     "git_status": git_status, "git_diff": git_diff,
     "git_commit": git_commit, "git_log": git_log,
     "update_scratchpad": update_scratchpad,

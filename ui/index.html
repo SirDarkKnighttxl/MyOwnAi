@@ -26,6 +26,17 @@ header{padding:9px 16px;border-bottom:1px solid var(--bd);display:flex;gap:14px;
 #airgap-control input{position:absolute;opacity:0;pointer-events:none}
 #airgap-badge{padding:2px 7px;border:1px solid #ffffff20;border-radius:999px;color:var(--dm);letter-spacing:.08em}
 #airgap-control input:checked + #airgap-badge{color:#ff6b6b;border-color:#ff6b6b66;background:#ff6b6b10}
+#approval-layer{position:fixed;z-index:100;inset:0;display:grid;place-items:center;padding:18px;background:#05050bd9;backdrop-filter:blur(8px)}
+#approval-layer[hidden]{display:none}
+#approval-modal{width:min(680px,100%);padding:22px;background:#10101d;border:1px solid #ffffff24;border-radius:10px;box-shadow:0 28px 90px #000}
+#approval-modal h2{margin-bottom:4px;color:#ffb454;font-size:14px;letter-spacing:.12em}
+#approval-modal .approval-label{margin-top:14px;color:var(--dm);font-size:10px;letter-spacing:.1em;text-transform:uppercase}
+#approval-command{max-height:230px;overflow:auto;margin-top:5px;padding:12px;background:#05050b;border:1px solid var(--bd);border-radius:6px;color:#f1f1f1;white-space:pre-wrap;word-break:break-word}
+#approval-cwd{margin-top:5px;color:#b8c0cc;word-break:break-all}
+#approval-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:20px}
+#approval-actions button{padding:8px 13px;font-size:11px}
+#approval-deny{background:#ff6b6b;color:#140606}
+#approval-session{background:#ffb454}
 #log{flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:16px}
 .msg{max-width:88%;user-select:text;position:relative}
 .u{align-self:flex-end;background:var(--in);padding:9px 12px;border-radius:8px;white-space:pre-wrap}
@@ -65,6 +76,18 @@ a{color:var(--ac)}
 <label id="airgap-control"><input id="airgap" type="checkbox"><span id="airgap-badge">ONLINE</span></label>
 <label style="color:var(--dm)"><input type="checkbox" id="think" checked> think</label>
 <span style="margin-left:auto"><a href="#" id="reset">clear</a></span></header>
+<div id="approval-layer" hidden>
+  <section id="approval-modal" role="dialog" aria-modal="true" aria-labelledby="approval-title">
+    <h2 id="approval-title">COMMAND APPROVAL</h2>
+    <div class="approval-label">command</div><pre id="approval-command"></pre>
+    <div class="approval-label">working directory</div><div id="approval-cwd"></div>
+    <div id="approval-actions">
+      <button id="approval-deny" type="button">DENY</button>
+      <button id="approval-allow" type="button">ALLOW</button>
+      <button id="approval-session" type="button">ALLOW FOR SESSION</button>
+    </div>
+  </section>
+</div>
 <div id="log"></div>
 <footer><textarea id="in" placeholder="Enter to send · Shift+Enter for newline"></textarea><button id="go">RUN</button></footer>
 <script>
@@ -78,8 +101,11 @@ const log=document.getElementById('log'), inp=document.getElementById('in'),
       samplerNote=document.getElementById('sampler-note'),
       airgapBox=document.getElementById('airgap'),
       airgapBadge=document.getElementById('airgap-badge'),
+      approvalLayer=document.getElementById('approval-layer'),
+      approvalCommand=document.getElementById('approval-command'),
+      approvalCwd=document.getElementById('approval-cwd'),
       thinkBox=document.getElementById('think');
-let hist=[], busy=false;
+let hist=[], busy=false, activeApproval=null, approvalBusy=false;
 const samplerKeys=['temp','top_p','top_k','min_p','repeat_penalty','max_tokens'];
 
 const esc=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -119,6 +145,39 @@ async function poll(){
   }catch(e){ dot.className=''; st.textContent='daemon down'; }
 }
 setInterval(poll,1500); poll();
+
+async function pollApprovals(){
+  try{
+    const data=await (await fetch('/api/approvals')).json();
+    const pending=data.pending||[];
+    const current=activeApproval&&pending.find(item=>item.id===activeApproval.id);
+    if(current) return;
+    activeApproval=pending[0]||null;
+    if(!activeApproval){approvalLayer.hidden=true;return;}
+    approvalCommand.textContent=activeApproval.command;
+    approvalCwd.textContent=activeApproval.cwd;
+    approvalLayer.hidden=false;
+  }catch(error){}
+}
+async function decideApproval(decision){
+  if(!activeApproval||approvalBusy) return;
+  approvalBusy=true;
+  const buttons=approvalLayer.querySelectorAll('button');
+  buttons.forEach(button=>button.disabled=true);
+  try{
+    const response=await fetch('/api/approvals/'+activeApproval.id,{
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({decision})
+    });
+    if(!response.ok) throw new Error('approval failed');
+    activeApproval=null; approvalLayer.hidden=true;
+  }catch(error){st.textContent=error.message;}
+  buttons.forEach(button=>button.disabled=false);
+  approvalBusy=false; await pollApprovals();
+}
+document.getElementById('approval-deny').onclick=()=>decideApproval('deny');
+document.getElementById('approval-allow').onclick=()=>decideApproval('allow');
+document.getElementById('approval-session').onclick=()=>decideApproval('allow-session');
+setInterval(pollApprovals,400); pollApprovals();
 
 async function refreshModels(){
   const data=await (await fetch('/api/models')).json();

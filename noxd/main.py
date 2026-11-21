@@ -11,7 +11,7 @@ import threading
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
-from . import agent, models as model_manager, rag, store
+from . import agent, approvals, models as model_manager, rag, store
 from .engine import Engine
 from .policy import Policy
 
@@ -64,6 +64,7 @@ def persona() -> str:
 def boot() -> None:
     global engine, policy
     c = cfg()
+    approvals.broker.reset()
     policy = Policy(c)
     engine = Engine(c)
     threading.Thread(target=_bring_up, daemon=True).start()
@@ -78,6 +79,7 @@ def _bring_up() -> None:
 
 @app.on_event("shutdown")
 def halt() -> None:
+    approvals.broker.reset()
     if engine:
         with model_lock:
             engine.stop()
@@ -234,6 +236,23 @@ def get_config() -> dict:
     return json.loads(CONFIG.read_text(encoding="utf-8"))
 
 
+@app.get("/api/approvals")
+def get_approvals() -> dict:
+    return {"pending": approvals.broker.list()}
+
+
+@app.post("/api/approvals/{request_id}")
+async def decide_approval(request_id: str, req: Request) -> dict:
+    decision = (await req.json()).get("decision", "")
+    try:
+        resolved = approvals.broker.resolve(request_id, decision)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not resolved:
+        raise HTTPException(404, "approval request not found")
+    return {"ok": True}
+
+
 def _validate_config(config: dict) -> None:
     role = config.get("model", {}).get("role")
     if role not in MODEL_ROLES:
@@ -261,7 +280,10 @@ async def set_config(req: Request) -> dict:
     body = await req.json()
     _validate_config(body)
     _write_config(body)
-    policy = Policy(body)
+    replacement = Policy(body)
+    if policy is not None:
+        replacement.inherit_session_grants(policy)
+    policy = replacement
     return {"ok": True}
 
 

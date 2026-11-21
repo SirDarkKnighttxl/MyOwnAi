@@ -344,14 +344,18 @@ def grep(policy, args: dict) -> dict:
     return {"ok": True, "hits": hits, "count": len(hits), "capped": len(hits) >= limit}
 
 
+def shell_cwd(args: dict) -> pathlib.Path:
+    return _abs(args.get("cwd", "."))
+
+
 def shell(policy, args: dict) -> dict:
     cmd = args["command"]
-    v = policy.check_command(cmd)
+    cwd = shell_cwd(args)
+    v = policy.check_command(cmd, str(cwd))
     if not v:
         return _deny(v.reason)
-    cwd = _abs(args.get("cwd", "."))
     if not cwd.is_dir():
-        cwd = WORK
+        return _deny(f"not a dir: {cwd}")
     timeout = min(int(args.get("timeout", 120)), 900)
     try:
         r = subprocess.run(

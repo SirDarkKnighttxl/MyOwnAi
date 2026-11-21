@@ -6,7 +6,7 @@ import pathlib
 
 import httpx
 
-from . import tools
+from . import approvals, tools
 
 MAX_STEPS = 12
 SCRATCH = pathlib.Path(__file__).resolve().parent.parent / "work" / "scratchpad.md"
@@ -71,7 +71,26 @@ async def run(policy, base_url: str, messages: list, sampling: dict, on_event, t
                 except ValueError:
                     args = {}
                 on_event({"tool": name, "args": args})
-                result = tools.dispatch(policy, name, args)
+                if name == "shell" and isinstance(args.get("command"), str):
+                    command = args["command"]
+                    cwd = str(tools.shell_cwd(args))
+                    if policy.needs_command_approval(command, cwd):
+                        decision = await approvals.broker.request(
+                            command, cwd, policy.binary_name(command)
+                        )
+                        if decision == "deny":
+                            result = {"ok": False, "error": "command denied by user"}
+                        else:
+                            policy.grant_command(
+                                command,
+                                cwd,
+                                for_session=decision == "allow-session",
+                            )
+                            result = tools.dispatch(policy, name, args)
+                    else:
+                        result = tools.dispatch(policy, name, args)
+                else:
+                    result = tools.dispatch(policy, name, args)
                 on_event({"tool_result": name, "ok": result.get("ok"), "result": result})
                 payload["messages"].append({
                     "role": "tool", "tool_call_id": call.get("id", ""),

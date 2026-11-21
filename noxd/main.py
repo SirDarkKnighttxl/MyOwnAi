@@ -93,6 +93,7 @@ def status() -> dict:
     assert engine is not None
     return {"ready": engine.ready, "running": engine.running,
             "error": engine.error, "mode": policy.mode if policy else "?",
+            "airgap": policy.airgap if policy else False,
             "role": engine.cfg["model"].get("role", "stock"),
             "model": engine.model_path,
             "log": engine.log_tail(6) if engine.error else ""}
@@ -250,6 +251,8 @@ def _validate_config(config: dict) -> None:
             raise HTTPException(
                 400, f"sampling.{name} must be between {minimum} and {maximum}"
             )
+    if not isinstance(config.get("ui", {}).get("airgap"), bool):
+        raise HTTPException(400, "ui.airgap must be a boolean")
 
 
 @app.put("/api/config")

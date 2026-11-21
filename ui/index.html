@@ -22,6 +22,10 @@ header{padding:9px 16px;border-bottom:1px solid var(--bd);display:flex;gap:14px;
 #sampler-actions{display:flex;align-items:center;gap:10px;margin-top:11px}
 #sampler-save{padding:5px 12px;font-size:11px}
 #sampler-note{color:var(--dm);font-size:11px}
+#airgap-control{display:flex;align-items:center;cursor:pointer}
+#airgap-control input{position:absolute;opacity:0;pointer-events:none}
+#airgap-badge{padding:2px 7px;border:1px solid #ffffff20;border-radius:999px;color:var(--dm);letter-spacing:.08em}
+#airgap-control input:checked + #airgap-badge{color:#ff6b6b;border-color:#ff6b6b66;background:#ff6b6b10}
 #log{flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:16px}
 .msg{max-width:88%;user-select:text;position:relative}
 .u{align-self:flex-end;background:var(--in);padding:9px 12px;border-radius:8px;white-space:pre-wrap}
@@ -58,6 +62,7 @@ a{color:var(--ac)}
   </div>
   <div id="sampler-actions"><button id="sampler-save" type="button">APPLY</button><span id="sampler-note">live on next run</span></div>
 </div>
+<label id="airgap-control"><input id="airgap" type="checkbox"><span id="airgap-badge">ONLINE</span></label>
 <label style="color:var(--dm)"><input type="checkbox" id="think" checked> think</label>
 <span style="margin-left:auto"><a href="#" id="reset">clear</a></span></header>
 <div id="log"></div>
@@ -71,6 +76,8 @@ const log=document.getElementById('log'), inp=document.getElementById('in'),
       samplerPanel=document.getElementById('sampler-panel'),
       samplerSave=document.getElementById('sampler-save'),
       samplerNote=document.getElementById('sampler-note'),
+      airgapBox=document.getElementById('airgap'),
+      airgapBadge=document.getElementById('airgap-badge'),
       thinkBox=document.getElementById('think');
 let hist=[], busy=false;
 const samplerKeys=['temp','top_p','top_k','min_p','repeat_penalty','max_tokens'];
@@ -107,6 +114,7 @@ async function poll(){
   try{
     const s=await (await fetch('/api/status')).json();
     roleBadge.textContent=s.role||'unknown'; roleBadge.dataset.role=s.role||'unknown';
+    airgapBox.checked=!!s.airgap; airgapBadge.textContent=s.airgap?'AIRGAP':'ONLINE';
     dot.className=s.ready?'on':''; st.textContent=s.ready?'ready · '+s.mode:(s.error||'loading');
   }catch(e){ dot.className=''; st.textContent='daemon down'; }
 }
@@ -160,6 +168,16 @@ samplerSave.onclick=async()=>{
     samplerNote.textContent='applied';
   }catch(error){samplerNote.textContent=error.message;}
   samplerSave.disabled=false;
+};
+airgapBox.onchange=async()=>{
+  airgapBox.disabled=true;
+  try{
+    const config=await (await fetch('/api/config')).json();
+    config.ui.airgap=airgapBox.checked;
+    const response=await fetch('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(config)});
+    if(!response.ok){const data=await response.json();throw new Error(data.detail||'airgap update failed');}
+  }catch(error){st.textContent=error.message;}
+  await poll(); airgapBox.disabled=false;
 };
 
 function bubble(cls,text){

@@ -52,7 +52,7 @@ class StatusTests(unittest.TestCase):
             model_path="model.gguf",
             cfg={"model": {"role": "ablit"}},
         )
-        fake_policy = types.SimpleNamespace(mode="yolo")
+        fake_policy = types.SimpleNamespace(mode="yolo", airgap=False)
         with (
             patch.object(main, "engine", fake_engine),
             patch.object(main, "policy", fake_policy),
@@ -61,12 +61,14 @@ class StatusTests(unittest.TestCase):
 
         self.assertEqual(result["role"], "ablit")
         self.assertEqual(result["model"], "model.gguf")
+        self.assertFalse(result["airgap"])
 
 
 class ConfigValidationTests(unittest.TestCase):
     def test_sampler_ranges_are_validated(self):
         config = {
             "model": {"role": "ablit"},
+            "ui": {"airgap": False},
             "sampling": {
                 "temp": 0.7,
                 "top_p": 0.9,
@@ -84,6 +86,7 @@ class ConfigValidationTests(unittest.TestCase):
     def test_integer_samplers_reject_floats(self):
         config = {
             "model": {"role": "stock"},
+            "ui": {"airgap": False},
             "sampling": {
                 "temp": 0.7,
                 "top_p": 0.9,

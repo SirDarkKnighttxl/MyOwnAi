@@ -19,6 +19,7 @@ python/
 *.gguf
 *.safetensors
 *.bin
+train/runs/
 
 # Platform and editor noise
 ._*

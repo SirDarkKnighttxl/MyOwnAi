@@ -17,6 +17,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 BIN = ROOT / "bin" / ("llama-server.exe" if sys.platform == "win32" else "llama-server")
 EMBED = ROOT / "models" / "nomic-embed-text-v1.5.Q4_K_M.gguf"
 PORT = 8095
+MIN_SCORE = 0.60
 
 TEXT_EXT = {".md", ".txt", ".rst", ".conf", ".cfg", ".yaml", ".yml", ".json"}
 SKIP = {".git", "node_modules", "__pycache__", ".venv", "dist", "build"}
@@ -140,7 +141,7 @@ def search(query: str, k: int = 6) -> list[dict]:
             continue
     scored.sort(reverse=True)
     return [{"score": round(s, 3), "path": p, "text": t}
-            for s, p, t in scored[:k] if s > 0.55]
+            for s, p, t in scored[:k] if s >= MIN_SCORE]
 
 
 def context(query: str, k: int = 6) -> str:

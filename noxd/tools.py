@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import html
+import os
 import pathlib
 import re as _re
 import subprocess
@@ -69,6 +70,33 @@ SCHEMA = [
             "cwd": {"type": "string"},
             "timeout": {"type": "integer"},
         }, "required": ["command"]}}},
+    {"type": "function", "function": {
+        "name": "git_status",
+        "description": "Show branch and working-tree status for a Git repository.",
+        "parameters": {"type": "object", "properties": {
+            "cwd": {"type": "string", "description": "repository path, relative to work/"},
+        }}}},
+    {"type": "function", "function": {
+        "name": "git_diff",
+        "description": "Show unstaged or staged changes for a Git repository.",
+        "parameters": {"type": "object", "properties": {
+            "cwd": {"type": "string", "description": "repository path, relative to work/"},
+            "staged": {"type": "boolean", "description": "show staged changes"},
+        }}}},
+    {"type": "function", "function": {
+        "name": "git_commit",
+        "description": "Commit staged changes. A non-empty commit message is required.",
+        "parameters": {"type": "object", "properties": {
+            "cwd": {"type": "string", "description": "repository path, relative to work/"},
+            "message": {"type": "string"},
+        }, "required": ["message"]}}},
+    {"type": "function", "function": {
+        "name": "git_log",
+        "description": "Show recent commits for a Git repository.",
+        "parameters": {"type": "object", "properties": {
+            "cwd": {"type": "string", "description": "repository path, relative to work/"},
+            "limit": {"type": "integer", "description": "number of commits, 1-100"},
+        }}}},
     {"type": "function", "function": {
         "name": "update_scratchpad",
         "description": "Rewrite the task plan. Call this first on any multi-step task, and again whenever the plan changes. Mark steps [x] done, [!] blocked, [ ] pending.",
@@ -330,6 +358,139 @@ def shell(policy, args: dict) -> dict:
     }
 
 
+def _run_git(
+    cwd: pathlib.Path,
+    args: list[str],
+    limit: int = 40000,
+    safe_directory: str | None = None,
+) -> dict:
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    trusted_path = safe_directory or str(cwd.resolve())
+    try:
+        result = subprocess.run(
+            [
+                "git", "--no-pager",
+                "-c", "color.ui=false",
+                "-c", f"safe.directory={trusted_path}",
+                *args,
+            ],
+            cwd=str(cwd),
+            capture_output=True,
+            timeout=120,
+            text=True,
+            errors="replace",
+            env=env,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+    except FileNotFoundError:
+        return _deny("git executable not found")
+    except subprocess.TimeoutExpired:
+        return _deny("git command timed out after 120s")
+    stdout = (result.stdout or "")[:limit]
+    stderr = (result.stderr or "")[:8000]
+    if result.returncode:
+        return {
+            "ok": False,
+            "code": result.returncode,
+            "error": (stderr or stdout or "git command failed").strip(),
+        }
+    response = {"ok": True, "stdout": stdout}
+    if stderr:
+        response["stderr"] = stderr
+    return response
+
+
+def _git_repository(policy, raw_cwd: str) -> tuple[pathlib.Path | None, dict | None]:
+    cwd = _abs(raw_cwd)
+    verdict = policy.check_path(str(cwd))
+    if not verdict:
+        return None, _deny(verdict.reason)
+    verdict = policy.check_command("git")
+    if not verdict:
+        return None, _deny(verdict.reason)
+    if not cwd.is_dir():
+        return None, _deny(f"not a dir: {cwd}")
+
+    # FAT/exFAT has no ownership metadata, so trust only for discovery and
+    # validate the resolved repository root before running any requested action.
+    probe = _run_git(
+        cwd,
+        ["rev-parse", "--show-toplevel"],
+        limit=4000,
+        safe_directory="*",
+    )
+    if not probe["ok"]:
+        detail = probe.get("error", "not a git repository")
+        return None, _deny(f"not a git repository: {detail}")
+    root = pathlib.Path(probe["stdout"].strip()).resolve()
+    verdict = policy.check_path(str(root))
+    if not verdict:
+        return None, _deny(verdict.reason)
+    return root, None
+
+
+def git_status(policy, args: dict) -> dict:
+    root, error = _git_repository(policy, args.get("cwd", "."))
+    if error:
+        return error
+    result = _run_git(root, ["status", "--short", "--branch"], limit=20000)
+    if not result["ok"]:
+        return result
+    return {"ok": True, "repo": str(root), "status": result["stdout"]}
+
+
+def git_diff(policy, args: dict) -> dict:
+    staged = args.get("staged", False)
+    if not isinstance(staged, bool):
+        return _deny("staged must be a boolean")
+    root, error = _git_repository(policy, args.get("cwd", "."))
+    if error:
+        return error
+    command = ["diff"]
+    if staged:
+        command.append("--cached")
+    result = _run_git(root, command)
+    if not result["ok"]:
+        return result
+    return {
+        "ok": True,
+        "repo": str(root),
+        "staged": staged,
+        "diff": result["stdout"],
+    }
+
+
+def git_commit(policy, args: dict) -> dict:
+    message = args.get("message")
+    if not isinstance(message, str) or not message.strip():
+        return _deny("commit message is required")
+    root, error = _git_repository(policy, args.get("cwd", "."))
+    if error:
+        return error
+    result = _run_git(root, ["commit", "-m", message.strip()], limit=20000)
+    if not result["ok"]:
+        return result
+    return {"ok": True, "repo": str(root), "output": result["stdout"]}
+
+
+def git_log(policy, args: dict) -> dict:
+    limit = args.get("limit", 10)
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+        return _deny("limit must be an integer between 1 and 100")
+    root, error = _git_repository(policy, args.get("cwd", "."))
+    if error:
+        return error
+    result = _run_git(
+        root,
+        ["log", "--oneline", "--decorate", f"-n{limit}"],
+        limit=20000,
+    )
+    if not result["ok"]:
+        return result
+    return {"ok": True, "repo": str(root), "log": result["stdout"]}
+
+
 SCRATCH = WORK / "scratchpad.md"
 
 
@@ -396,6 +557,8 @@ HANDLERS = {
     "read_file": read_file, "write_file": write_file,
     "edit_file": edit_file, "apply_patch": apply_patch,
     "list_dir": list_dir, "grep": grep, "shell": shell,
+    "git_status": git_status, "git_diff": git_diff,
+    "git_commit": git_commit, "git_log": git_log,
     "update_scratchpad": update_scratchpad,
     "search": search, "fetch": fetch,
 }

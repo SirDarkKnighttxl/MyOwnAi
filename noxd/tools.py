@@ -32,6 +32,21 @@ SCHEMA = [
             "content": {"type": "string"},
         }, "required": ["path", "content"]}}},
     {"type": "function", "function": {
+        "name": "edit_file",
+        "description": "Replace one exact text block in a file. Fails if the block is missing or appears more than once.",
+        "parameters": {"type": "object", "properties": {
+            "path": {"type": "string"},
+            "old_text": {"type": "string"},
+            "new_text": {"type": "string"},
+        }, "required": ["path", "old_text", "new_text"]}}},
+    {"type": "function", "function": {
+        "name": "apply_patch",
+        "description": "Apply an exact unified diff to one file. Supports multiple hunks and rejects stale context.",
+        "parameters": {"type": "object", "properties": {
+            "path": {"type": "string"},
+            "patch": {"type": "string"},
+        }, "required": ["path", "patch"]}}},
+    {"type": "function", "function": {
         "name": "list_dir",
         "description": "List a directory. Directories end with /.",
         "parameters": {"type": "object", "properties": {
@@ -112,6 +127,146 @@ def write_file(policy, args: dict) -> dict:
     data = args["content"]
     path.write_text(data, encoding="utf-8")
     return {"ok": True, "path": str(path), "bytes": len(data.encode())}
+
+
+def edit_file(policy, args: dict) -> dict:
+    path = _abs(args["path"])
+    v = policy.check_path(str(path))
+    if not v:
+        return _deny(v.reason)
+    if not path.is_file():
+        return _deny(f"not a file: {path}")
+    old_text = args["old_text"]
+    new_text = args["new_text"]
+    if not isinstance(old_text, str) or not isinstance(new_text, str):
+        return _deny("old_text and new_text must be strings")
+    if not old_text:
+        return _deny("old_text must not be empty")
+    try:
+        with path.open("r", encoding="utf-8", newline="") as fh:
+            content = fh.read()
+    except (OSError, UnicodeError) as exc:
+        return _deny(str(exc))
+    newline = "\r\n" if "\r\n" in content else "\r" if "\r" in content else "\n"
+    old_text = old_text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", newline)
+    new_text = new_text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", newline)
+    matches = content.count(old_text)
+    if matches == 0:
+        return _deny("exact text not found; file may have changed")
+    if matches > 1:
+        return _deny(f"ambiguous edit: exact text appears {matches} times")
+    updated = content.replace(old_text, new_text, 1)
+    try:
+        with path.open("w", encoding="utf-8", newline="") as fh:
+            fh.write(updated)
+    except OSError as exc:
+        return _deny(str(exc))
+    return {"ok": True, "path": str(path), "replacements": 1}
+
+
+_HUNK_HEADER = _re.compile(
+    r"^@@ -(?P<old_start>\d+)(?:,(?P<old_count>\d+))?"
+    r" \+(?P<new_start>\d+)(?:,(?P<new_count>\d+))? @@(?: .*)?$"
+)
+
+
+def _parse_patch(raw: str) -> tuple[list[dict], str | None]:
+    if not isinstance(raw, str) or not raw.strip():
+        return [], "patch must be a non-empty string"
+
+    lines = raw.splitlines()
+    hunks = []
+    current = None
+    for line in lines:
+        match = _HUNK_HEADER.match(line)
+        if match:
+            old_count = int(match.group("old_count") or 1)
+            new_count = int(match.group("new_count") or 1)
+            current = {
+                "old_start": int(match.group("old_start")),
+                "old_count": old_count,
+                "new_start": int(match.group("new_start")),
+                "new_count": new_count,
+                "lines": [],
+            }
+            hunks.append(current)
+            continue
+        if current is None:
+            if line.startswith(("diff --git ", "index ", "--- ", "+++ ")) or not line:
+                continue
+            return [], f"invalid unified diff before first hunk: {line[:80]}"
+        if line == r"\ No newline at end of file":
+            continue
+        if not line or line[0] not in " +-":
+            return [], f"invalid unified diff line: {line[:80]}"
+        current["lines"].append(line)
+
+    if not hunks:
+        return [], "patch has no hunks"
+    for number, hunk in enumerate(hunks, 1):
+        old_seen = sum(line[0] in " -" for line in hunk["lines"])
+        new_seen = sum(line[0] in " +" for line in hunk["lines"])
+        if old_seen != hunk["old_count"] or new_seen != hunk["new_count"]:
+            return [], (
+                f"invalid hunk {number}: header expects "
+                f"{hunk['old_count']} old/{hunk['new_count']} new lines, "
+                f"body has {old_seen} old/{new_seen} new"
+            )
+    return hunks, None
+
+
+def apply_patch(policy, args: dict) -> dict:
+    path = _abs(args["path"])
+    v = policy.check_path(str(path))
+    if not v:
+        return _deny(v.reason)
+    if not path.is_file():
+        return _deny(f"not a file: {path}")
+    hunks, error = _parse_patch(args["patch"])
+    if error:
+        return _deny(error)
+    try:
+        with path.open("r", encoding="utf-8", newline="") as fh:
+            content = fh.read()
+    except (OSError, UnicodeError) as exc:
+        return _deny(str(exc))
+
+    newline = "\r\n" if "\r\n" in content else "\r" if "\r" in content else "\n"
+    normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+    final_newline = normalized.endswith("\n")
+    lines = normalized.splitlines()
+    offset = 0
+    previous_end = 0
+    for number, hunk in enumerate(hunks, 1):
+        old_count = hunk["old_count"]
+        base = hunk["old_start"] if old_count == 0 else hunk["old_start"] - 1
+        if base < previous_end:
+            return _deny(f"invalid hunk {number}: hunks overlap or are out of order")
+        index = base + offset
+        old_lines = [line[1:] for line in hunk["lines"] if line[0] in " -"]
+        new_lines = [line[1:] for line in hunk["lines"] if line[0] in " +"]
+        if index < 0 or index + len(old_lines) > len(lines):
+            return _deny(
+                f"stale patch: hunk {number} is outside {path.name} "
+                f"at line {hunk['old_start']}"
+            )
+        if lines[index:index + len(old_lines)] != old_lines:
+            return _deny(
+                f"stale patch: hunk {number} context does not match "
+                f"{path.name} at line {hunk['old_start']}"
+            )
+        lines[index:index + len(old_lines)] = new_lines
+        offset += len(new_lines) - len(old_lines)
+        previous_end = base + len(old_lines)
+
+    updated = newline.join(lines)
+    if final_newline and lines:
+        updated += newline
+    try:
+        path.write_text(updated, encoding="utf-8", newline="")
+    except OSError as exc:
+        return _deny(str(exc))
+    return {"ok": True, "path": str(path), "hunks": len(hunks)}
 
 
 def list_dir(policy, args: dict) -> dict:
@@ -239,6 +394,7 @@ def fetch(policy, args: dict) -> dict:
 
 HANDLERS = {
     "read_file": read_file, "write_file": write_file,
+    "edit_file": edit_file, "apply_patch": apply_patch,
     "list_dir": list_dir, "grep": grep, "shell": shell,
     "update_scratchpad": update_scratchpad,
     "search": search, "fetch": fetch,

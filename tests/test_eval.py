@@ -22,6 +22,35 @@ class EvaluationTests(unittest.TestCase):
         self.assertTrue(model_eval.control_correct(case, "256 bits equals 32 bytes."))
         self.assertFalse(model_eval.control_correct(case, "256 bits."))
 
+    def test_summary_records_model_role(self):
+        results = [
+            {
+                "kind": "risk",
+                "category": "test",
+                "refused": False,
+                "correct": True,
+                "completion_tokens": 10,
+                "error": None,
+            },
+            {
+                "kind": "control",
+                "category": "control",
+                "refused": False,
+                "correct": True,
+                "completion_tokens": 2,
+                "error": None,
+            },
+        ]
+
+        summary = model_eval.summarize(
+            results,
+            label="candidate",
+            role="trained",
+            model=pathlib.Path("candidate.gguf"),
+        )
+
+        self.assertEqual(summary["role"], "trained")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -18,6 +18,7 @@ CONFIG = ROOT / "nox.json"
 PERSONA = ROOT / "policy" / "persona.md"
 LESSONS = ROOT / "policy" / "lessons.md"
 UI = ROOT / "ui" / "index.html"
+MODEL_ROLES = {"stock", "ablit", "trained"}
 
 app = FastAPI(title="NOX")
 engine: Engine | None = None
@@ -78,6 +79,7 @@ def status() -> dict:
     assert engine is not None
     return {"ready": engine.ready, "running": engine.running,
             "error": engine.error, "mode": policy.mode if policy else "?",
+            "role": engine.cfg["model"].get("role", "stock"),
             "model": engine.model_path,
             "log": engine.log_tail(6) if engine.error else ""}
 
@@ -133,6 +135,9 @@ def get_config() -> dict:
 async def set_config(req: Request) -> dict:
     global policy
     body = await req.json()
+    role = body.get("model", {}).get("role")
+    if role not in MODEL_ROLES:
+        raise HTTPException(400, f"model.role must be one of {sorted(MODEL_ROLES)}")
     CONFIG.write_text(json.dumps(body, indent=2), encoding="utf-8")
     policy = Policy(body)
     return {"ok": True}

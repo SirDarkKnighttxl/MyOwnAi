@@ -1,6 +1,7 @@
 {
   "server": { "host": "127.0.0.1", "port": 8080, "engine_port": 8081 },
   "model": {
+    "role": "ablit",
     "paths": [
       "C:\\NOX\\models\\Huihui-Qwen3-8B-abliterated-v2.Q4_K_M.gguf",
       "C:\\NOX\\models\\Qwen3-8B-Q4_K_M.gguf",

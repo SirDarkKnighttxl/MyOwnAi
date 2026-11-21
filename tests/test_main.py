@@ -43,5 +43,25 @@ class RagInjectionTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+class StatusTests(unittest.TestCase):
+    def test_status_exposes_active_model_role(self):
+        fake_engine = types.SimpleNamespace(
+            ready=True,
+            running=True,
+            error=None,
+            model_path="model.gguf",
+            cfg={"model": {"role": "ablit"}},
+        )
+        fake_policy = types.SimpleNamespace(mode="yolo")
+        with (
+            patch.object(main, "engine", fake_engine),
+            patch.object(main, "policy", fake_policy),
+        ):
+            result = main.status()
+
+        self.assertEqual(result["role"], "ablit")
+        self.assertEqual(result["model"], "model.gguf")
+
+
 if __name__ == "__main__":
     unittest.main()

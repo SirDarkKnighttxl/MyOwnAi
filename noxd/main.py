@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import math
 import pathlib
 import threading
 
@@ -20,6 +21,14 @@ PERSONA = ROOT / "policy" / "persona.md"
 LESSONS = ROOT / "policy" / "lessons.md"
 UI = ROOT / "ui" / "index.html"
 MODEL_ROLES = {"stock", "ablit", "trained"}
+SAMPLER_LIMITS = {
+    "temp": (0.0, 2.0, float),
+    "top_p": (0.0, 1.0, float),
+    "top_k": (0, 200, int),
+    "min_p": (0.0, 1.0, float),
+    "repeat_penalty": (0.1, 2.0, float),
+    "max_tokens": (1, 32768, int),
+}
 
 app = FastAPI(title="NOX")
 engine: Engine | None = None
@@ -221,17 +230,34 @@ async def add_lesson(req: Request) -> dict:
 
 @app.get("/api/config")
 def get_config() -> dict:
-    return cfg()
+    return json.loads(CONFIG.read_text(encoding="utf-8"))
+
+
+def _validate_config(config: dict) -> None:
+    role = config.get("model", {}).get("role")
+    if role not in MODEL_ROLES:
+        raise HTTPException(400, f"model.role must be one of {sorted(MODEL_ROLES)}")
+    sampling = config.get("sampling")
+    if not isinstance(sampling, dict):
+        raise HTTPException(400, "sampling must be an object")
+    for name, (minimum, maximum, value_type) in SAMPLER_LIMITS.items():
+        value = sampling.get(name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise HTTPException(400, f"sampling.{name} must be numeric")
+        if value_type is int and not isinstance(value, int):
+            raise HTTPException(400, f"sampling.{name} must be an integer")
+        if not math.isfinite(value) or not minimum <= value <= maximum:
+            raise HTTPException(
+                400, f"sampling.{name} must be between {minimum} and {maximum}"
+            )
 
 
 @app.put("/api/config")
 async def set_config(req: Request) -> dict:
     global policy
     body = await req.json()
-    role = body.get("model", {}).get("role")
-    if role not in MODEL_ROLES:
-        raise HTTPException(400, f"model.role must be one of {sorted(MODEL_ROLES)}")
-    CONFIG.write_text(json.dumps(body, indent=2), encoding="utf-8")
+    _validate_config(body)
+    _write_config(body)
     policy = Policy(body)
     return {"ok": True}
 

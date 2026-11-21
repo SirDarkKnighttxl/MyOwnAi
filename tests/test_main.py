@@ -63,5 +63,39 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(result["model"], "model.gguf")
 
 
+class ConfigValidationTests(unittest.TestCase):
+    def test_sampler_ranges_are_validated(self):
+        config = {
+            "model": {"role": "ablit"},
+            "sampling": {
+                "temp": 0.7,
+                "top_p": 0.9,
+                "top_k": 40,
+                "min_p": 0.05,
+                "repeat_penalty": 1.05,
+                "max_tokens": 4096,
+            },
+        }
+        main._validate_config(config)
+        config["sampling"]["top_p"] = 1.5
+        with self.assertRaises(main.HTTPException):
+            main._validate_config(config)
+
+    def test_integer_samplers_reject_floats(self):
+        config = {
+            "model": {"role": "stock"},
+            "sampling": {
+                "temp": 0.7,
+                "top_p": 0.9,
+                "top_k": 40.5,
+                "min_p": 0.05,
+                "repeat_penalty": 1.05,
+                "max_tokens": 100,
+            },
+        }
+        with self.assertRaises(main.HTTPException):
+            main._validate_config(config)
+
+
 if __name__ == "__main__":
     unittest.main()

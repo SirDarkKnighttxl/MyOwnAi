@@ -5,7 +5,7 @@
 :root{--bg:#0a0a12;--sf:#0d0d1a;--in:#12121f;--ac:#00d4aa;--tx:#e0e0e0;--dm:#ffffff55;--bd:#ffffff12}
 *{box-sizing:border-box;margin:0}
 body{background:var(--bg);color:var(--tx);font:15px/1.65 ui-monospace,Consolas,monospace;height:100vh;display:flex;flex-direction:column}
-header{padding:9px 16px;border-bottom:1px solid var(--bd);display:flex;gap:14px;align-items:center;font-size:12px}
+header{padding:9px 16px;border-bottom:1px solid var(--bd);display:flex;gap:14px;align-items:center;font-size:12px;position:relative}
 #dot{width:8px;height:8px;border-radius:50%;background:#444}
 #dot.on{background:var(--ac);box-shadow:0 0 8px var(--ac)}
 #role{padding:1px 7px;border:1px solid var(--bd);border-radius:999px;color:#b8c0cc;text-transform:uppercase;letter-spacing:.08em}
@@ -13,6 +13,15 @@ header{padding:9px 16px;border-bottom:1px solid var(--bd);display:flex;gap:14px;
 #role[data-role="trained"]{color:var(--ac);border-color:#00d4aa55}
 #model-select{max-width:310px;background:var(--in);border:1px solid var(--bd);color:var(--tx);padding:3px 24px 3px 7px;border-radius:4px;font:inherit}
 #model-select:disabled{opacity:.5}
+#sampler-toggle{background:transparent;color:var(--dm);border:1px solid var(--bd);padding:3px 8px;border-radius:4px;font:inherit}
+#sampler-panel{position:absolute;z-index:20;top:calc(100% + 7px);right:74px;width:370px;padding:13px;background:#0d0d1af5;border:1px solid #ffffff20;border-radius:7px;box-shadow:0 18px 50px #000b}
+#sampler-panel[hidden]{display:none}
+#sampler-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
+#sampler-grid label{display:flex;flex-direction:column;gap:3px;color:var(--dm);font-size:10px;text-transform:uppercase;letter-spacing:.06em}
+#sampler-grid input{width:100%;background:var(--in);border:1px solid var(--bd);color:var(--tx);padding:6px;border-radius:4px;font:12px ui-monospace,Consolas,monospace;outline:none}
+#sampler-actions{display:flex;align-items:center;gap:10px;margin-top:11px}
+#sampler-save{padding:5px 12px;font-size:11px}
+#sampler-note{color:var(--dm);font-size:11px}
 #log{flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:16px}
 .msg{max-width:88%;user-select:text;position:relative}
 .u{align-self:flex-end;background:var(--in);padding:9px 12px;border-radius:8px;white-space:pre-wrap}
@@ -33,9 +42,22 @@ textarea:focus{border-color:#ffffff30}
 button{background:var(--ac);color:#000;border:0;padding:0 18px;border-radius:6px;font:inherit;font-weight:700;cursor:pointer}
 button:disabled{opacity:.4;cursor:default}
 a{color:var(--ac)}
+@media(max-width:720px){header{gap:7px;padding:8px}#role{display:none}#model-select{max-width:145px}#sampler-panel{right:8px;width:calc(100vw - 16px)}}
 </style></head><body>
 <header><span id="dot"></span><b>NOX</b><span id="role" data-role="ablit">ablit</span>
 <select id="model-select" aria-label="Active model"><option>discovering models</option></select><span id="st">starting</span>
+<button id="sampler-toggle" type="button">samplers</button>
+<div id="sampler-panel" hidden>
+  <div id="sampler-grid">
+    <label>temperature<input id="sample-temp" type="number" min="0" max="2" step="0.05"></label>
+    <label>top p<input id="sample-top_p" type="number" min="0" max="1" step="0.01"></label>
+    <label>top k<input id="sample-top_k" type="number" min="0" max="200" step="1"></label>
+    <label>min p<input id="sample-min_p" type="number" min="0" max="1" step="0.01"></label>
+    <label>repeat penalty<input id="sample-repeat_penalty" type="number" min="0.1" max="2" step="0.01"></label>
+    <label>max tokens<input id="sample-max_tokens" type="number" min="1" max="32768" step="1"></label>
+  </div>
+  <div id="sampler-actions"><button id="sampler-save" type="button">APPLY</button><span id="sampler-note">live on next run</span></div>
+</div>
 <label style="color:var(--dm)"><input type="checkbox" id="think" checked> think</label>
 <span style="margin-left:auto"><a href="#" id="reset">clear</a></span></header>
 <div id="log"></div>
@@ -45,8 +67,13 @@ const log=document.getElementById('log'), inp=document.getElementById('in'),
       go=document.getElementById('go'), dot=document.getElementById('dot'),
       st=document.getElementById('st'), roleBadge=document.getElementById('role'),
       modelSelect=document.getElementById('model-select'),
+      samplerToggle=document.getElementById('sampler-toggle'),
+      samplerPanel=document.getElementById('sampler-panel'),
+      samplerSave=document.getElementById('sampler-save'),
+      samplerNote=document.getElementById('sampler-note'),
       thinkBox=document.getElementById('think');
 let hist=[], busy=false;
+const samplerKeys=['temp','top_p','top_k','min_p','repeat_penalty','max_tokens'];
 
 const esc=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 function md(src){
@@ -111,6 +138,29 @@ modelSelect.onchange=async()=>{
   await refreshModels(); await poll(); modelSelect.disabled=false;
 };
 refreshModels().catch(error=>{st.textContent=error.message;});
+
+async function loadSamplers(){
+  const config=await (await fetch('/api/config')).json();
+  for(const key of samplerKeys) document.getElementById('sample-'+key).value=config.sampling[key];
+}
+samplerToggle.onclick=async()=>{
+  samplerPanel.hidden=!samplerPanel.hidden;
+  if(!samplerPanel.hidden) await loadSamplers();
+};
+samplerSave.onclick=async()=>{
+  samplerSave.disabled=true; samplerNote.textContent='saving';
+  try{
+    const config=await (await fetch('/api/config')).json();
+    for(const key of samplerKeys){
+      const input=document.getElementById('sample-'+key);
+      config.sampling[key]=(key==='top_k'||key==='max_tokens')?parseInt(input.value,10):parseFloat(input.value);
+    }
+    const response=await fetch('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(config)});
+    if(!response.ok){const data=await response.json();throw new Error(data.detail||'save failed');}
+    samplerNote.textContent='applied';
+  }catch(error){samplerNote.textContent=error.message;}
+  samplerSave.disabled=false;
+};
 
 function bubble(cls,text){
   const d=document.createElement('div'); d.className='msg '+cls;

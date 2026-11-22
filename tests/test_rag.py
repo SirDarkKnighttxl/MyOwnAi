@@ -1,3 +1,4 @@
+import io
 import json
 import math
 import pathlib
@@ -5,7 +6,7 @@ import re
 import sqlite3
 import tempfile
 import unittest
-from contextlib import closing
+from contextlib import closing, redirect_stdout
 from unittest.mock import patch
 
 from noxd import rag, store
@@ -42,6 +43,7 @@ class RetrievalFloorTests(unittest.TestCase):
 
         with (
             patch.object(rag, "embed", return_value=[1.0, 0.0]),
+            patch.object(rag, "ensure", return_value=True),
             patch.object(rag, "session", return_value=FakeConnection(rows)),
         ):
             hits = rag.search("query")
@@ -55,9 +57,31 @@ class RetrievalFloorTests(unittest.TestCase):
 
         with (
             patch.object(rag, "embed", return_value=[1.0, 0.0]),
+            patch.object(rag, "ensure", return_value=True),
             patch.object(rag, "session", return_value=FakeConnection(rows)),
         ):
             self.assertEqual(rag.context("off topic"), "")
+
+    def test_search_calls_ensure_first(self):
+        order = []
+        with (
+            patch.object(rag, "ensure", side_effect=lambda: order.append("ensure") or True),
+            patch.object(rag, "embed", side_effect=lambda q: order.append("embed") or [1.0, 0.0]),
+            patch.object(rag, "session", return_value=FakeConnection([])),
+        ):
+            rag.search("query")
+        self.assertEqual(order, ["ensure", "embed"])
+
+    def test_search_reports_dead_server_instead_of_embedding(self):
+        with (
+            patch.object(rag, "ensure", return_value=False),
+            patch.object(rag, "embed") as fake_embed,
+            patch("builtins.print") as fake_print,
+        ):
+            self.assertEqual(rag.search("query"), [])
+        fake_embed.assert_not_called()
+        logged = " ".join(str(call.args[0]) for call in fake_print.call_args_list)
+        self.assertIn("embedding server unavailable", logged)
 
 
 REA_SCOPE = f"rea|filter={rag.FILTER_VERSION}"
@@ -329,6 +353,7 @@ class CorpusFilterTests(unittest.TestCase):
             "ciphey/tests/fixtures/sample.json": "{}\n",
             "rea/dist.min.json": "{}\n",
             "rea/svg.md": "<svg " + "x" * 3000 + ">\n",
+            "rea/edge.md": "y" * 1000 + "\n",
             "rea/docs/cli.md": "rea --help\n",
             "images/top.md": "repo literally named images\n",
         }
@@ -338,7 +363,21 @@ class CorpusFilterTests(unittest.TestCase):
             path.write_text(text, encoding="utf-8")
         kept = [f.relative_to(root).as_posix() for f in rag._files(root, None)]
         self.assertEqual(kept, ["ciphey/README.md", "ciphey/docs/guide.md",
-                                "images/top.md", "rea/docs/cli.md"])
+                                "images/top.md", "rea/docs/cli.md", "rea/edge.md"])
+
+    def test_file_with_5000_char_line_is_excluded_and_logged(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = pathlib.Path(tmp.name) / "corpus"
+        (root / "rea" / "docs").mkdir(parents=True)
+        (root / "rea" / "docs" / "cli.md").write_text("rea usage\n", encoding="utf-8")
+        (root / "rea" / "blob.md").write_text("short\n" + "z" * 5000 + "\nshort\n",
+                                              encoding="utf-8")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            kept = [f.relative_to(root).as_posix() for f in rag._files(root, ["rea"])]
+        self.assertEqual(kept, ["rea/docs/cli.md"])
+        self.assertIn("skip long-line rea/blob.md longest=5000", out.getvalue().splitlines())
 
 
 class EmbedServerStartTests(unittest.TestCase):

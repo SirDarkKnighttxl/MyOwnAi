@@ -34,10 +34,10 @@ SKIP = {".git", "node_modules", "__pycache__", ".venv", "dist", "build"}
 # Generated dumps, data and binary-ish text that only waste embed calls.
 # Bump FILTER_VERSION whenever these change: it is part of the resume
 # fingerprint, because candidate numbers shift when the file set changes.
-FILTER_VERSION = 2
+FILTER_VERSION = 3
 EXCLUDE_DIRS = {"images", "testdata", "test-data", "fixtures"}
 EXCLUDE_NAMES = ("repomix-output*", "*wordlist*", "*.min.*")
-MAX_LINE = 2000
+MAX_LINE = 1000
 _last_error = ""
 
 
@@ -132,7 +132,9 @@ def _files(root: pathlib.Path, only: list[str] | None) -> list[pathlib.Path]:
                 continue
         except OSError:
             continue
-        if _has_long_line(p):
+        longest = _longest_line(p)
+        if longest > MAX_LINE:
+            print(f"skip long-line {rel.as_posix()} longest={longest}", flush=True)
             continue
         files.append(p)
     # Stable order so a candidate number means the same chunk on every run.
@@ -140,13 +142,15 @@ def _files(root: pathlib.Path, only: list[str] | None) -> list[pathlib.Path]:
     return files
 
 
-def _has_long_line(p: pathlib.Path) -> bool:
-    """Minified/SVG/dump files: one line longer than MAX_LINE chars."""
+def _longest_line(p: pathlib.Path) -> int:
+    """Length of the longest line (newline excluded). Minified/SVG/dump files
+    exceed MAX_LINE. An unreadable file counts as too long, so it is skipped
+    and logged rather than silently dropped."""
     try:
         with open(p, encoding="utf-8", errors="replace") as f:
-            return any(len(line) > MAX_LINE for line in f)
+            return max((len(line.rstrip("\r\n")) for line in f), default=0)
     except OSError:
-        return True
+        return MAX_LINE + 1
 
 
 def _candidates(files: list[pathlib.Path]):
@@ -259,8 +263,14 @@ def index(root: pathlib.Path, limit: int = 1500, only: list[str] | None = None,
 
 
 def search(query: str, k: int = 6) -> list[dict]:
+    # Start (or confirm) the embed server first, so a dead server is reported
+    # instead of masquerading as "no results above the floor".
+    if not ensure():
+        print("rag.search: embedding server unavailable", flush=True)
+        return []
     qv = embed(query)
     if not qv:
+        print(f"rag.search: query embed failed: {_last_error}", flush=True)
         return []
     with session() as c:
         rows = c.execute("SELECT path, text, vec FROM chunks").fetchall()

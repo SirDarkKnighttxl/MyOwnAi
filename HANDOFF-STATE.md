@@ -17,8 +17,9 @@
 - WP-14 skipped candidates are committed with the next successful insert, so an abort or interrupt retries them on resume instead of dropping them.
 - WP-14 follow-up: all SQLite access goes through `store.session()` (commit + close), which fixes the Windows nox.db lock in tests. `pytest.ini` added.
 - WP-14 follow-up: the embed server starts with `-c 2048 -b 2048 -ub 2048`, and its stdout/stderr go to `logs/embed.log` (grep `n_ubatch`). The first live run failed on dense chunks under the 512-token default batch.
-- WP-14 follow-up: the indexer skips `images/`, `testdata/`, `fixtures/`, `repomix-output*`, `*wordlist*`, `*.min.*`, and any file with a line over 2000 chars. `FILTER_VERSION=2` is part of the resume fingerprint, so `--resume` is refused after a filter change.
-- Full suite passes: 54 tests (`python -m pytest -q`).
+- WP-14 follow-up: the indexer skips `images/`, `testdata/`, `fixtures/`, `repomix-output*`, `*wordlist*`, `*.min.*`, and any file whose longest line is over 1000 chars (logged as `skip long-line <relpath> longest=<n>`). `FILTER_VERSION=3` is part of the resume fingerprint, so `--resume` is refused after a filter change.
+- `rag.search()` calls `ensure()` first and prints a message if the embed server is down, so a dead server no longer looks like zero results.
+- Full suite passes: 57 tests (`python -m pytest -q`).
 
 ## In Progress
 - None.

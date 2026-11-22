@@ -1,0 +1,7 @@
+# Daemon + shell runtime deps only (training deps live in train/requirements.txt).
+# Installed into runtime\python by setup_runtime.bat; all are pure-Python or
+# have cp312 win_amd64 wheels except proxy_tools (sdist, pulled by pywebview).
+fastapi==0.165.0
+uvicorn==0.54.0
+httpx==0.28.1
+pywebview==6.2.1

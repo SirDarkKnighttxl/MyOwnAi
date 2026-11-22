@@ -23,21 +23,25 @@
 - WP-15 adds the lessons memory editor. `noxd/lessons.py` treats every non-blank line of `policy/lessons.md` as a lesson, except `#` headers and `<!-- -->` comments, which are kept untouched. Indices are 0-based and renumber after a delete.
 - WP-15 API: GET/POST `/api/lessons`, PUT/DELETE `/api/lessons/{i}`. An out-of-range index returns 404 and empty text returns 400. Writes are atomic (temp file + `os.replace`) and keep the file's CRLF/LF style. The UI has a `lessons` sidebar with inline edit, delete, and add.
 - WP-15: the system prompt reads lessons.md fresh on every chat (it was never cached), so an edit reaches the next chat.
-- Full suite passes: 67 tests (`python -m pytest -q`).
+- WP-16 adds a portable runtime. `setup_runtime.bat` downloads python-3.12.10-embed-amd64 (SHA-256 pinned) into `runtime\python` and installs `packaging\python312._pth` (`..\..` + `import site`). It then bootstraps pip and installs `requirements.txt` using setuptools/wheel with `--no-build-isolation`, because the proxy_tools sdist can't build in isolation under `._pth`.
+- WP-16: `run.bat` prefers `runtime\python\python.exe`, falls back to a working `python` on PATH (skipping the Store alias), and errors clearly if neither exists. The README documents the stripped-PATH acceptance check.
+- Full suite passes: 79 tests (`python -m pytest -q`).
 
 ## In Progress
 - None.
 
 ## Pending Live Checks
 - WP-15 live check: in the UI, add a lesson, edit it, confirm the next chat's system prompt contains it, then delete it.
+- WP-16 acceptance on Windows: run `setup_runtime.bat`, then the stripped-PATH `run.bat` check from the README.
 
 ## Remaining
-- WP-16.
+- None before WP-13.
 - Original WP-14 corpus expansion and re-rank work (pytorch/transformers docs, per-repo caps, reranker) was descoped and is not scheduled.
 - WP-13 stays last, after the portable harness is complete.
 
 ## Known Issues
-- No known WP-08 through WP-15 defects.
+- No known WP-08 through WP-16 defects.
+- `setup_fast.bat` still hardcodes `C:\NOX\models` (pre-existing, untouched).
 - `GET /api/persona` returns persona plus lessons, so a client that PUTs that text back would copy the lessons into persona.md. The UI does not do this; left as is.
 - The repository is on a USB drive, so model and file operations can be slow.
 - Models, binaries, runtime files, logs, database files, and `work/` are intentionally ignored.

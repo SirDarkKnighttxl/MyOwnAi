@@ -1,0 +1,9 @@
+python312.zip
+.
+# Project root (runtime\python -> ..\..) so `import noxd` and
+# uvicorn "noxd.main:app" resolve. The embeddable distro ignores PYTHONPATH
+# whenever a ._pth file exists, so this line is the only way in.
+..\..
+
+# Enables Lib\site-packages (pip installs there).
+import site

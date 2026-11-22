@@ -5,6 +5,7 @@ import re
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from unittest.mock import patch
 
 from noxd import rag, store
@@ -41,7 +42,7 @@ class RetrievalFloorTests(unittest.TestCase):
 
         with (
             patch.object(rag, "embed", return_value=[1.0, 0.0]),
-            patch.object(rag, "conn", return_value=FakeConnection(rows)),
+            patch.object(rag, "session", return_value=FakeConnection(rows)),
         ):
             hits = rag.search("query")
 
@@ -54,7 +55,7 @@ class RetrievalFloorTests(unittest.TestCase):
 
         with (
             patch.object(rag, "embed", return_value=[1.0, 0.0]),
-            patch.object(rag, "conn", return_value=FakeConnection(rows)),
+            patch.object(rag, "session", return_value=FakeConnection(rows)),
         ):
             self.assertEqual(rag.context("off topic"), "")
 
@@ -129,12 +130,12 @@ class ResumableIndexTests(unittest.TestCase):
         return embed
 
     def rows(self):
-        with sqlite3.connect(self.db) as c:
+        with closing(sqlite3.connect(self.db)) as c:
             texts = [r[0] for r in c.execute("SELECT text FROM chunks ORDER BY id")]
         return [int(re.match(r"candidate (\d+)", t).group(1)) for t in texts]
 
     def state(self):
-        with sqlite3.connect(self.db) as c:
+        with closing(sqlite3.connect(self.db)) as c:
             return c.execute(
                 "SELECT next_candidate, skipped, scope FROM index_state").fetchall()
 
@@ -234,6 +235,56 @@ class ResumableIndexTests(unittest.TestCase):
             rag.index(self.root, 4, ["rea"])
         logged = [str(call.args[0]) for call in fake_print.call_args_list]
         self.assertIn("  4 chunks done=4 skipped=1 consec=0", logged)
+
+
+class ConnectionLeakTests(unittest.TestCase):
+    """Windows can't delete an open nox.db; on Linux, count unclosed handles instead."""
+
+    def test_index_search_and_store_close_every_connection(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = pathlib.Path(tmp.name)
+        repo = base / "corpus" / "rea"
+        repo.mkdir(parents=True)
+        for n in (1, 2, 3):
+            (repo / f"c{n:02d}.md").write_text(candidate_text(n), encoding="utf-8")
+
+        opened = []
+        real_connect = sqlite3.connect
+
+        class TrackedConnection(sqlite3.Connection):
+            closed = False
+
+            def close(self):
+                self.closed = True
+                super().close()
+
+        def tracking_connect(*args, **kwargs):
+            c = real_connect(*args, factory=TrackedConnection, **kwargs)
+            opened.append(c)
+            return c
+
+        with (
+            patch.object(store, "DB", base / "nox.db"),
+            patch.object(store.sqlite3, "connect", side_effect=tracking_connect),
+            patch.object(rag, "ensure", return_value=True),
+            patch.object(rag, "_sleep"),
+            patch.object(rag, "embed", side_effect=lambda text: [1.0, 0.0] if "02" not in text[:12] else None),
+        ):
+            rag.index(base / "corpus", 10, ["rea"])
+            rag.index(base / "corpus", 10, ["rea"], resume=True)
+            rag.search("query")
+            sid = store.new_session("t")
+            store.add_msg(sid, "user", "hi")
+            store.get_msgs(sid)
+            store.list_sessions()
+            store.delete(sid)
+            with self.assertRaises(Interrupted):
+                with store.session():
+                    raise Interrupted()
+
+        self.assertGreaterEqual(len(opened), 9)
+        self.assertEqual([c for c in opened if not c.closed], [])
 
 
 if __name__ == "__main__":

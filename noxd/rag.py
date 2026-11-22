@@ -8,11 +8,10 @@ import socket
 import subprocess
 import sys
 import time
-from contextlib import closing
 
 import httpx
 
-from .store import conn
+from .store import session
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BIN = ROOT / "bin" / ("llama-server.exe" if sys.platform == "win32" else "llama-server")
@@ -157,7 +156,7 @@ def index(root: pathlib.Path, limit: int = 1500, only: list[str] | None = None,
     files = _files(root, only)
     print(f"{len(files)} candidate files", flush=True)
 
-    with closing(conn()) as c:
+    with session() as c:
         state = _state(c) if resume else None
         if resume and state and state["scope"] != scope:
             return {"ok": False, "error": f"resume scope mismatch: saved {state['scope']!r}, "
@@ -222,7 +221,7 @@ def search(query: str, k: int = 6) -> list[dict]:
     qv = embed(query)
     if not qv:
         return []
-    with conn() as c:
+    with session() as c:
         rows = c.execute("SELECT path, text, vec FROM chunks").fetchall()
     scored = []
     for r in rows:

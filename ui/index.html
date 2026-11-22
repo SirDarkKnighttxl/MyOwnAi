@@ -57,7 +57,24 @@ textarea:focus{border-color:#ffffff30}
 button{background:var(--ac);color:#000;border:0;padding:0 18px;border-radius:6px;font:inherit;font-weight:700;cursor:pointer}
 button:disabled{opacity:.4;cursor:default}
 a{color:var(--ac)}
-@media(max-width:720px){header{gap:7px;padding:8px}#role{display:none}#model-select{max-width:145px}#sampler-panel{right:8px;width:calc(100vw - 16px)}}
+#lessons-toggle{background:transparent;color:var(--dm);border:1px solid var(--bd);padding:3px 8px;border-radius:4px;font:inherit}
+#lessons-panel{position:fixed;z-index:15;top:43px;right:0;bottom:89px;width:360px;display:flex;flex-direction:column;background:#0d0d1af5;border-left:1px solid #ffffff20;box-shadow:-18px 0 50px #000b;font-size:12px}
+#lessons-panel[hidden]{display:none}
+#lessons-head{display:flex;align-items:center;gap:8px;padding:10px 13px;border-bottom:1px solid var(--bd);color:var(--dm);font-size:10px;letter-spacing:.1em;text-transform:uppercase}
+#lessons-head span{margin-left:auto;text-transform:none;letter-spacing:0;font-size:11px}
+#lessons-list{flex:1;overflow-y:auto;list-style:none;padding:8px 10px;margin:0;display:flex;flex-direction:column;gap:6px}
+#lessons-list li{display:flex;gap:6px;align-items:flex-start;padding:7px 8px;background:var(--in);border:1px solid var(--bd);border-radius:5px}
+#lessons-list .lesson-idx{color:var(--dm);min-width:20px}
+#lessons-list .lesson-text{flex:1;white-space:pre-wrap;word-break:break-word;cursor:text;outline:none}
+#lessons-list .lesson-text[contenteditable="true"]{border-bottom:1px solid var(--ac)}
+#lessons-list li button{padding:1px 7px;font-size:10px;background:transparent;color:var(--dm);border:1px solid var(--bd);border-radius:4px}
+#lessons-list li button.lesson-save{color:var(--ac);border-color:#00d4aa55}
+#lessons-list li button.lesson-del:hover{color:#ff6b6b;border-color:#ff6b6b66}
+#lessons-list .lessons-empty{background:none;border:0;color:var(--dm)}
+#lessons-add{display:flex;gap:6px;padding:10px;border-top:1px solid var(--bd)}
+#lessons-add input{flex:1;background:var(--in);border:1px solid var(--bd);color:var(--tx);padding:6px;border-radius:4px;font:12px ui-monospace,Consolas,monospace;outline:none}
+#lessons-add button{padding:5px 12px;font-size:11px}
+@media(max-width:720px){header{gap:7px;padding:8px}#role{display:none}#model-select{max-width:145px}#sampler-panel{right:8px;width:calc(100vw - 16px)}#lessons-panel{width:100vw}}
 </style></head><body>
 <header><span id="dot"></span><b>NOX</b><span id="role" data-role="ablit">ablit</span>
 <select id="model-select" aria-label="Active model"><option>discovering models</option></select><span id="st">starting</span>
@@ -73,6 +90,7 @@ a{color:var(--ac)}
   </div>
   <div id="sampler-actions"><button id="sampler-save" type="button">APPLY</button><span id="sampler-note">live on next run</span></div>
 </div>
+<button id="lessons-toggle" type="button">lessons</button>
 <label id="airgap-control"><input id="airgap" type="checkbox"><span id="airgap-badge">ONLINE</span></label>
 <label style="color:var(--dm)"><input type="checkbox" id="think" checked> think</label>
 <span style="margin-left:auto"><a href="#" id="reset">clear</a></span></header>
@@ -88,6 +106,11 @@ a{color:var(--ac)}
     </div>
   </section>
 </div>
+<aside id="lessons-panel" hidden aria-label="Lessons">
+  <div id="lessons-head">lessons<span id="lessons-note">click to edit · enter saves</span></div>
+  <ul id="lessons-list"></ul>
+  <form id="lessons-add"><input id="lessons-input" placeholder="new lesson" autocomplete="off"><button id="lessons-add-btn" type="submit">ADD</button></form>
+</aside>
 <div id="log"></div>
 <footer><textarea id="in" placeholder="Enter to send · Shift+Enter for newline"></textarea><button id="go">RUN</button></footer>
 <script>
@@ -237,6 +260,66 @@ airgapBox.onchange=async()=>{
     if(!response.ok){const data=await response.json();throw new Error(data.detail||'airgap update failed');}
   }catch(error){st.textContent=error.message;}
   await poll(); airgapBox.disabled=false;
+};
+
+const lessonsToggle=document.getElementById('lessons-toggle'),
+      lessonsPanel=document.getElementById('lessons-panel'),
+      lessonsList=document.getElementById('lessons-list'),
+      lessonsNote=document.getElementById('lessons-note'),
+      lessonsForm=document.getElementById('lessons-add'),
+      lessonsInput=document.getElementById('lessons-input');
+async function lessonsCall(method,url,body){
+  const response=await fetch(url,{method,headers:{'Content-Type':'application/json'},
+    body:body===undefined?undefined:JSON.stringify(body)});
+  const data=await response.json().catch(()=>({}));
+  if(!response.ok) throw new Error(data.detail||method+' failed');
+  return data;
+}
+function renderLessons(items){
+  lessonsList.innerHTML='';
+  if(!items.length){
+    const li=document.createElement('li'); li.className='lessons-empty'; li.textContent='no lessons yet';
+    lessonsList.appendChild(li); return;
+  }
+  for(const item of items){
+    const li=document.createElement('li');
+    const idx=document.createElement('span'); idx.className='lesson-idx'; idx.textContent=item.index;
+    const text=document.createElement('span'); text.className='lesson-text'; text.textContent=item.text;
+    const save=document.createElement('button'); save.type='button'; save.className='lesson-save'; save.textContent='save'; save.hidden=true;
+    const del=document.createElement('button'); del.type='button'; del.className='lesson-del'; del.textContent='del';
+    const commit=async()=>{
+      const value=text.textContent.trim();
+      text.contentEditable='false'; save.hidden=true;
+      if(value===item.text) return;
+      try{ renderLessons((await lessonsCall('PUT','/api/lessons/'+item.index,{text:value})).lessons); lessonsNote.textContent='saved · next chat'; }
+      catch(error){ lessonsNote.textContent=error.message; await loadLessons(); }
+    };
+    text.onclick=()=>{ if(text.contentEditable==='true') return; text.contentEditable='true'; save.hidden=false; text.focus(); };
+    text.onkeydown=e=>{
+      if(e.key==='Enter'){ e.preventDefault(); commit(); }
+      else if(e.key==='Escape'){ text.textContent=item.text; text.contentEditable='false'; save.hidden=true; }
+    };
+    save.onclick=commit;
+    del.onclick=async()=>{
+      try{ renderLessons((await lessonsCall('DELETE','/api/lessons/'+item.index)).lessons); lessonsNote.textContent='deleted'; }
+      catch(error){ lessonsNote.textContent=error.message; await loadLessons(); }
+    };
+    li.append(idx,text,save,del); lessonsList.appendChild(li);
+  }
+}
+async function loadLessons(){
+  try{ renderLessons((await lessonsCall('GET','/api/lessons')).lessons); }
+  catch(error){ lessonsNote.textContent=error.message; }
+}
+lessonsToggle.onclick=async()=>{
+  lessonsPanel.hidden=!lessonsPanel.hidden;
+  if(!lessonsPanel.hidden){ await loadLessons(); lessonsInput.focus(); }
+};
+lessonsForm.onsubmit=async e=>{
+  e.preventDefault();
+  const value=lessonsInput.value.trim(); if(!value) return;
+  try{ renderLessons((await lessonsCall('POST','/api/lessons',{text:value})).lessons); lessonsInput.value=''; lessonsNote.textContent='added · next chat'; }
+  catch(error){ lessonsNote.textContent=error.message; }
 };
 
 function bubble(cls,text){

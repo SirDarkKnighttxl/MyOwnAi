@@ -11,7 +11,7 @@ import threading
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
-from . import agent, approvals, models as model_manager, rag, store
+from . import agent, approvals, lessons, models as model_manager, rag, store
 from .engine import Engine
 from .policy import Policy
 
@@ -50,13 +50,13 @@ def cfg() -> dict:
 
 
 def persona() -> str:
+    """System prompt: persona.md + lessons.md, both read from disk per call."""
     parts = []
     if PERSONA.exists():
         parts.append(PERSONA.read_text(encoding="utf-8"))
-    if LESSONS.exists():
-        lessons = LESSONS.read_text(encoding="utf-8").strip()
-        if lessons:
-            parts.append("LESSONS\n" + lessons)
+    block = lessons.prompt_block(LESSONS)
+    if block:
+        parts.append(block)
     return "\n\n".join(parts)
 
 
@@ -222,13 +222,49 @@ async def set_persona(req: Request) -> dict:
     return {"ok": True}
 
 
+async def _lesson_text(req: Request) -> str:
+    try:
+        body = await req.json()
+    except ValueError as exc:
+        raise HTTPException(400, "body must be JSON") from exc
+    text = body.get("text", "") if isinstance(body, dict) else ""
+    if not isinstance(text, str) or not text.strip():
+        raise HTTPException(400, "text must be a non-empty string")
+    return text
+
+
+def _lesson_404(index: int) -> HTTPException:
+    return HTTPException(404, f"no lesson at index {index}")
+
+
+@app.get("/api/lessons")
+def get_lessons() -> dict:
+    return {"lessons": lessons.list_lessons(LESSONS)}
+
+
 @app.post("/api/lessons")
 async def add_lesson(req: Request) -> dict:
-    text = (await req.json()).get("text", "").strip()
-    if text:
-        with LESSONS.open("a", encoding="utf-8") as fh:
-            fh.write(f"- {text}\n")
-    return {"ok": True}
+    item = lessons.add(await _lesson_text(req), LESSONS)
+    return {"ok": True, **item, "lessons": lessons.list_lessons(LESSONS)}
+
+
+@app.put("/api/lessons/{index}")
+async def edit_lesson(index: int, req: Request) -> dict:
+    text = await _lesson_text(req)
+    try:
+        item = lessons.update(index, text, LESSONS)
+    except IndexError as exc:
+        raise _lesson_404(index) from exc
+    return {"ok": True, **item, "lessons": lessons.list_lessons(LESSONS)}
+
+
+@app.delete("/api/lessons/{index}")
+def drop_lesson(index: int) -> dict:
+    try:
+        item = lessons.delete(index, LESSONS)
+    except IndexError as exc:
+        raise _lesson_404(index) from exc
+    return {"ok": True, **item, "lessons": lessons.list_lessons(LESSONS)}
 
 
 @app.get("/api/config")

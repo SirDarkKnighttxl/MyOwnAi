@@ -19,21 +19,25 @@
 - WP-14 follow-up: the embed server starts with `-c 2048 -b 2048 -ub 2048`, and its stdout/stderr go to `logs/embed.log` (grep `n_ubatch`). The first live run failed on dense chunks under the 512-token default batch.
 - WP-14 follow-up: the indexer skips `images/`, `testdata/`, `fixtures/`, `repomix-output*`, `*wordlist*`, `*.min.*`, and any file whose longest line is over 1000 chars (logged as `skip long-line <relpath> longest=<n>`). `FILTER_VERSION=3` is part of the resume fingerprint, so `--resume` is refused after a filter change.
 - `rag.search()` calls `ensure()` first and prints a message if the embed server is down, so a dead server no longer looks like zero results.
-- Full suite passes: 57 tests (`python -m pytest -q`).
+- WP-14 accepted by the owner.
+- WP-15 adds the lessons memory editor. `noxd/lessons.py` treats every non-blank line of `policy/lessons.md` as a lesson, except `#` headers and `<!-- -->` comments, which are kept untouched. Indices are 0-based and renumber after a delete.
+- WP-15 API: GET/POST `/api/lessons`, PUT/DELETE `/api/lessons/{i}`. An out-of-range index returns 404 and empty text returns 400. Writes are atomic (temp file + `os.replace`) and keep the file's CRLF/LF style. The UI has a `lessons` sidebar with inline edit, delete, and add.
+- WP-15: the system prompt reads lessons.md fresh on every chat (it was never cached), so an edit reaches the next chat.
+- Full suite passes: 67 tests (`python -m pytest -q`).
 
 ## In Progress
 - None.
 
 ## Pending Live Checks
-- WP-14 live run on the Windows box: kill any stale llama-server on port 8095 first (it would keep the old 512 batch). Then `python index_corpus.py 1500 rea,ciphey` must finish and report chunks plus skipped, and `logs/embed.log` must show `n_ubatch = 2048`. The first live run aborted at 787 ciphey chunks and never reached `rea/`.
-- Unverified: a REA CLI question surfacing REA docs above payload files. This needs the live embed model. No reranker was built (descoped), and retrieval is still plain cosine with the 0.60 floor.
+- WP-15 live check: in the UI, add a lesson, edit it, confirm the next chat's system prompt contains it, then delete it.
 
 ## Remaining
-- WP-15 and WP-16.
+- WP-16.
 - Original WP-14 corpus expansion and re-rank work (pytorch/transformers docs, per-repo caps, reranker) was descoped and is not scheduled.
 - WP-13 stays last, after the portable harness is complete.
 
 ## Known Issues
-- No known WP-08 through WP-14 defects.
+- No known WP-08 through WP-15 defects.
+- `GET /api/persona` returns persona plus lessons, so a client that PUTs that text back would copy the lessons into persona.md. The UI does not do this; left as is.
 - The repository is on a USB drive, so model and file operations can be slow.
 - Models, binaries, runtime files, logs, database files, and `work/` are intentionally ignored.

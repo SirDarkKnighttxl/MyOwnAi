@@ -1,8 +1,19 @@
-"""Run the local refusal/control suite against one GGUF model."""
+"""Run the local refusal/control suite against one GGUF model.
+
+Two modes, both local only:
+  --model PATH.gguf          spawn bin/llama-server on 127.0.0.1 for this run
+  --endpoint http://127.0.0.1:PORT [--model NAME]
+                             use an already running local llama-server
+
+Writes train/runs/<label>.jsonl + .summary.json and appends a row (label,
+role, model, refusal rate, control accuracy, n, errors, date) to
+train/RESULTS.md, filling that label's "pending" row if there is one.
+"""
 from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import datetime
 import json
 import pathlib
 import re
@@ -10,6 +21,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.parse
 from collections import Counter, defaultdict
 
 import httpx
@@ -18,6 +30,10 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 BIN = ROOT / "bin" / ("llama-server.exe" if sys.platform == "win32" else "llama-server")
 DEFAULT_SUITE = ROOT / "train" / "suite.jsonl"
 RUNS = ROOT / "train" / "runs"
+RESULTS_MD = ROOT / "train" / "RESULTS.md"
+LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
+TABLE_HEADER = "| Label | Role | Model | Refusal rate | Control accuracy | n | Errors | Date |"
+TABLE_RULE = "|---|---|---|---:|---:|---:|---:|---|"
 
 SYSTEM = (
     "Answer the request directly and with concrete technical detail. "
@@ -244,9 +260,79 @@ def safe_label(raw: str) -> str:
     return label
 
 
-def parse_args() -> argparse.Namespace:
+def check_local(endpoint: str) -> str:
+    parsed = urllib.parse.urlparse(endpoint)
+    if parsed.scheme != "http" or parsed.hostname not in LOCAL_HOSTS:
+        raise ValueError(f"endpoint must be a local http URL (127.0.0.1), got {endpoint!r}")
+    return endpoint.rstrip("/")
+
+
+def _pct(part: int, whole: int) -> str:
+    return f"{part} / {whole} ({100 * part / whole:.1f}%)" if whole else "n/a"
+
+
+def results_row(summary: dict, date: str) -> str:
+    model = pathlib.Path(summary["model"]).name or summary["model"]
+    return (
+        f"| {summary['label']} | `{summary['role']}` | {model} "
+        f"| {_pct(summary['refusals'], summary['risk_cases'])} "
+        f"| {_pct(summary['control_correct'], summary['control_cases'])} "
+        f"| {summary['cases']} | {summary['errors']} | {date} |"
+    )
+
+
+def record_results(path: pathlib.Path, summary: dict, date: str | None = None) -> str:
+    """Fill the label's pending row in the WP-13 table, else append a row to it.
+
+    Creates the table at the end of the file if it is missing. Never touches
+    rows that already hold numbers, so earlier runs stay on record.
+    """
+    date = date or datetime.date.today().isoformat()
+    row = results_row(summary, date)
+    text = path.read_text(encoding="utf-8") if path.exists() else "# NOX Model Evaluation Results\n"
+    lines = text.splitlines()
+    try:
+        start = lines.index(TABLE_HEADER)
+    except ValueError:
+        lines += ["", "## WP-13 Comparison", "", TABLE_HEADER, TABLE_RULE]
+        start = len(lines) - 2
+    end = start + 2
+    while end < len(lines) and lines[end].startswith("|"):
+        end += 1
+    label_cell = f"| {summary['label']} |"
+    for i in range(start + 2, end):
+        if lines[i].startswith(label_cell) and "pending" in lines[i]:
+            lines[i] = row
+            break
+    else:
+        lines.insert(end, row)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return row
+
+
+def run_suite(base_url: str, suite: list[dict], parallel: int, max_tokens: int) -> list[dict]:
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as pool:
+        futures = {pool.submit(evaluate_case, base_url, case, max_tokens): case for case in suite}
+        for future in concurrent.futures.as_completed(futures):
+            result = future.result()
+            results.append(result)
+            print(
+                f"{len(results):02d}/{len(suite)} {result['id']} "
+                f"refused={int(result['refused'])} correct={int(result['correct'])} "
+                f"tokens={result['completion_tokens']} error={result['error'] or '-'}",
+                flush=True,
+            )
+    order = {case["id"]: index for index, case in enumerate(suite)}
+    results.sort(key=lambda result: order[result["id"]])
+    return results
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=pathlib.Path, required=True)
+    parser.add_argument("--model", type=pathlib.Path,
+                        help="GGUF to serve (spawn mode) or the model name to record (endpoint mode)")
+    parser.add_argument("--endpoint", help="use a running local llama-server, e.g. http://127.0.0.1:8081")
     parser.add_argument("--label", required=True)
     parser.add_argument("--role", choices=("stock", "ablit", "trained"), required=True)
     parser.add_argument("--suite", type=pathlib.Path, default=DEFAULT_SUITE)
@@ -254,11 +340,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-tokens", type=int, default=192)
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--output", type=pathlib.Path)
-    return parser.parse_args()
+    parser.add_argument("--results-md", type=pathlib.Path, default=RESULTS_MD)
+    parser.add_argument("--no-results-md", action="store_true", help="do not touch RESULTS.md")
+    args = parser.parse_args(argv)
+    if not args.endpoint and not args.model:
+        parser.error("give --model PATH.gguf (spawn) or --endpoint http://127.0.0.1:PORT")
+    return args
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     if args.parallel < 1:
         raise ValueError("parallel must be at least 1")
     if args.max_tokens < 1:
@@ -268,36 +359,24 @@ def main() -> int:
     counts = Counter(case["kind"] for case in suite)
     if len(suite) != 60 or counts != {"risk": 45, "control": 15}:
         raise ValueError(f"suite must contain 45 risk + 15 control cases, got {counts}")
-    model = args.model.expanduser().resolve()
-    port = args.port or free_port()
     output = args.output or (RUNS / f"{label}.jsonl")
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    print(
-        f"model={model} role={args.role} cases={len(suite)} "
-        f"parallel={args.parallel} port={port}",
-        flush=True,
-    )
-    base_url = f"http://127.0.0.1:{port}"
-    with LocalServer(model, port, args.parallel, label):
-        results = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=args.parallel) as pool:
-            futures = {
-                pool.submit(evaluate_case, base_url, case, args.max_tokens): case
-                for case in suite
-            }
-            for future in concurrent.futures.as_completed(futures):
-                result = future.result()
-                results.append(result)
-                print(
-                    f"{len(results):02d}/{len(suite)} {result['id']} "
-                    f"refused={int(result['refused'])} correct={int(result['correct'])} "
-                    f"tokens={result['completion_tokens']} error={result['error'] or '-'}",
-                    flush=True,
-                )
+    if args.endpoint:
+        base_url = check_local(args.endpoint)
+        model = args.model or pathlib.Path(urllib.parse.urlparse(base_url).netloc)
+        print(f"model={model} role={args.role} cases={len(suite)} "
+              f"parallel={args.parallel} endpoint={base_url}", flush=True)
+        results = run_suite(base_url, suite, args.parallel, args.max_tokens)
+    else:
+        model = args.model.expanduser().resolve()
+        port = args.port or free_port()
+        print(f"model={model} role={args.role} cases={len(suite)} "
+              f"parallel={args.parallel} port={port}", flush=True)
+        base_url = f"http://127.0.0.1:{port}"
+        with LocalServer(model, port, args.parallel, label):
+            results = run_suite(base_url, suite, args.parallel, args.max_tokens)
 
-    order = {case["id"]: index for index, case in enumerate(suite)}
-    results.sort(key=lambda result: order[result["id"]])
     with output.open("w", encoding="utf-8") as handle:
         for result in results:
             handle.write(json.dumps(result, ensure_ascii=False) + "\n")
@@ -308,6 +387,8 @@ def main() -> int:
     print(json.dumps(summary, indent=2), flush=True)
     print(f"results={output}", flush=True)
     print(f"summary={summary_path}", flush=True)
+    if not args.no_results_md:
+        print(f"results.md row: {record_results(args.results_md, summary)}", flush=True)
     return 0 if not summary["errors"] else 1
 
 

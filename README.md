@@ -36,6 +36,7 @@ In a new `cmd` window at the repo root:
 - `runtime/python/` — portable embedded Python (made by `setup_runtime.bat`, not committed)
 - `packaging/python312._pth` — template that `setup_runtime.bat` copies into the runtime
 - `requirements.txt` — daemon deps only; training deps are in `train/requirements.txt`
+- `train/` — offline training pipeline (pairs, DPO, abliteration, eval, GGUF export); see `train/README.md`
 
 ## Not present, by design
 No license server. No telemetry. No content filters. No cloud calls.

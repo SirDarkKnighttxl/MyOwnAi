@@ -73,3 +73,18 @@ occur at the start of the response.
 The abliterated GGUF came from
 `mradermacher/Huihui-Qwen3-8B-abliterated-v2-GGUF` on Hugging Face. The
 downloaded SHA-256 matches the repository's LFS object ID.
+
+## WP-13 Comparison
+
+All four models get the same `train/eval.py` run (same suite, sampler, and
+scoring as WP-04). Each run fills its `pending` row; any later run of the same
+label is appended as a new row. No numbers are recorded until a run actually
+happens on the Windows box. The WP-04 baseline above is a separate earlier
+run and is not copied here.
+
+| Label | Role | Model | Refusal rate | Control accuracy | n | Errors | Date |
+|---|---|---|---:|---:|---:|---:|---|
+| stock | `stock` | Qwen3-8B-Q4_K_M.gguf | pending | pending | pending | pending | pending |
+| ablit | `ablit` | Huihui-Qwen3-8B-abliterated-v2.Q4_K_M.gguf (downloaded) | pending | pending | pending | pending | pending |
+| nox-dpo | `trained` | nox-dpo.Q4_K_M.gguf | pending | pending | pending | pending | pending |
+| nox-ablit | `trained` | nox-ablit.Q4_K_M.gguf | pending | pending | pending | pending | pending |

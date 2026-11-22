@@ -38,13 +38,28 @@ def roots(config: dict) -> list[pathlib.Path]:
     return found
 
 
-def metadata(path: pathlib.Path) -> dict:
+TRAINED_PREFIX = "nox-"  # train/export_gguf.py writes models/nox-<name>.Q4_K_M.gguf
+ROLES = {"stock", "ablit", "trained"}
+
+
+def metadata(path: pathlib.Path, roles: dict | None = None) -> dict:
+    """Role resolution: embedding names first, then an explicit nox.json
+    `model.roles` {filename: role} entry, then the `nox-` prefix (our own
+    trained exports, e.g. nox-ablit is trained, not the downloaded ablit),
+    then the legacy name heuristics."""
     name = path.name
     lower = name.lower()
+    mapped = {str(k).casefold(): v for k, v in (roles or {}).items() if v in ROLES}
     embedding = "embed" in lower or "nomic" in lower
     if embedding:
         role = None
         kind = "embedding"
+    elif lower in mapped:
+        role = mapped[lower]
+        kind = "chat"
+    elif lower.startswith(TRAINED_PREFIX):
+        role = "trained"
+        kind = "chat"
     elif "ablit" in lower:
         role = "ablit"
         kind = "chat"
@@ -72,6 +87,7 @@ def metadata(path: pathlib.Path) -> dict:
 
 def discover(config: dict, loaded_path: str | None = None) -> list[dict]:
     loaded_key = path_key(loaded_path) if loaded_path else None
+    role_map = config.get("model", {}).get("roles") or {}
     results = []
     seen = set()
     for root in roots(config):
@@ -83,7 +99,7 @@ def discover(config: dict, loaded_path: str | None = None) -> list[dict]:
                 continue
             seen.add(key)
             try:
-                item = metadata(path)
+                item = metadata(path, role_map)
             except OSError:
                 continue
             item["active"] = key == loaded_key

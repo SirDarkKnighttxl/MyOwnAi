@@ -25,7 +25,11 @@
 - WP-15: the system prompt reads lessons.md fresh on every chat (it was never cached), so an edit reaches the next chat.
 - WP-16 adds a portable runtime. `setup_runtime.bat` downloads python-3.12.10-embed-amd64 (SHA-256 pinned) into `runtime\python` and installs `packaging\python312._pth` (`..\..` + `import site`). It then bootstraps pip and installs `requirements.txt` using setuptools/wheel with `--no-build-isolation`, because the proxy_tools sdist can't build in isolation under `._pth`.
 - WP-16: `run.bat` prefers `runtime\python\python.exe`, falls back to a working `python` on PATH (skipping the Store alias), and errors clearly if neither exists. The README documents the stripped-PATH acceptance check.
-- Full suite passes: 79 tests (`python -m pytest -q`).
+- WP-13 adds the training pipeline in `train/` (see `train/README.md`): `build_pairs.py` (schema check, dedupe, seeded split, optional local refusal sampling), `dpo.py` (QLoRA NF4, r32/a64, DPO or `--orpo`, max_len 1024, gradient checkpointing), `abliterate.py` (refusal direction -> exact rank-1 LoRA on o_proj/down_proj/embed_tokens), `eval.py` (spawn or `--endpoint` on 127.0.0.1; records role; fills the RESULTS.md row), and `export_gguf.py` (merge -> convert_hf_to_gguf -> llama-quantize Q4_K_M -> `models/nox-*.Q4_K_M.gguf`).
+- WP-13 role registration: the `nox-` filename prefix maps to role=trained (so nox-ablit is not taken for the downloaded ablit), with an optional `model.roles` {filename: role} override in nox.json.
+- WP-13 deps live in `train/requirements.txt` (torch 2.15.0 from the CUDA index, transformers 5.24, peft 0.22, trl 1.18.2, bitsandbytes 0.50.2). The daemon never imports torch, and a test enforces it.
+- WP-13 was checked here only on CPU with a tiny random Qwen3: DPO and ORPO trained 2 steps, the abliteration LoRA merged to the manual orthogonalization (max error 6e-8), and merge + llama.cpp convert produced a GGUF. Nothing was run on the 8B model or a GPU.
+- Full suite passes: 108 tests, plus 2 torch tests that skip without train deps (`python -m pytest -q`).
 
 ## In Progress
 - None.
@@ -33,14 +37,14 @@
 ## Pending Live Checks
 - WP-15 live check: in the UI, add a lesson, edit it, confirm the next chat's system prompt contains it, then delete it.
 - WP-16 acceptance on Windows: run `setup_runtime.bat`, then the stripped-PATH `run.bat` check from the README.
+- WP-13 on Windows: follow `train/README.md` to fill the four pending rows in `train/RESULTS.md` (stock, ablit, nox-dpo, nox-ablit). No WP-13 numbers exist yet.
 
 ## Remaining
-- None before WP-13.
+- None. WP-01 through WP-16 are committed; live checks are listed above.
 - Original WP-14 corpus expansion and re-rank work (pytorch/transformers docs, per-repo caps, reranker) was descoped and is not scheduled.
-- WP-13 stays last, after the portable harness is complete.
 
 ## Known Issues
-- No known WP-08 through WP-16 defects.
+- No known WP-08 through WP-16 defects. WP-13 is untested at 8B scale; its VRAM figures are estimates (see `train/README.md`).
 - `setup_fast.bat` still hardcodes `C:\NOX\models` (pre-existing, untouched).
 - `GET /api/persona` returns persona plus lessons, so a client that PUTs that text back would copy the lessons into persona.md. The UI does not do this; left as is.
 - The repository is on a USB drive, so model and file operations can be slow.

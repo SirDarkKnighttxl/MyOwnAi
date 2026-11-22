@@ -293,6 +293,11 @@ def _validate_config(config: dict) -> None:
     role = config.get("model", {}).get("role")
     if role not in MODEL_ROLES:
         raise HTTPException(400, f"model.role must be one of {sorted(MODEL_ROLES)}")
+    role_map = config.get("model", {}).get("roles", {})
+    if not isinstance(role_map, dict) or any(
+        not isinstance(k, str) or v not in MODEL_ROLES for k, v in role_map.items()
+    ):
+        raise HTTPException(400, f"model.roles must map filenames to {sorted(MODEL_ROLES)}")
     sampling = config.get("sampling")
     if not isinstance(sampling, dict):
         raise HTTPException(400, "sampling must be an object")

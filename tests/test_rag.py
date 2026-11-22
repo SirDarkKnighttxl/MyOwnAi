@@ -60,6 +60,9 @@ class RetrievalFloorTests(unittest.TestCase):
             self.assertEqual(rag.context("off topic"), "")
 
 
+REA_SCOPE = f"rea|filter={rag.FILTER_VERSION}"
+
+
 class Interrupted(BaseException):
     """Stands in for Ctrl+C / a killed process mid-run."""
 
@@ -144,7 +147,7 @@ class ResumableIndexTests(unittest.TestCase):
             with self.assertRaises(Interrupted):
                 rag.index(self.root, 100, ["rea"])
         self.assertEqual(self.rows(), [1, 2, 4, 5])
-        self.assertEqual(self.state(), [(5, 1, "rea")])
+        self.assertEqual(self.state(), [(5, 1, REA_SCOPE)])
 
         self.calls.clear()
         with patch.object(rag, "embed", side_effect=self.fake_embed({3})):
@@ -156,7 +159,7 @@ class ResumableIndexTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["chunks"], 5)
         self.assertEqual(result["skipped"], 1)
-        self.assertEqual(self.state(), [(10, 1, "rea")])
+        self.assertEqual(self.state(), [(10, 1, REA_SCOPE)])
 
     def test_resume_ignores_row_count(self):
         with patch.object(rag, "embed", side_effect=self.fake_embed({3})):
@@ -177,7 +180,7 @@ class ResumableIndexTests(unittest.TestCase):
         self.assertEqual(self.calls, [1, 2])
         self.assertEqual(self.rows(), [1, 2])
         self.assertEqual(result["skipped"], 0)
-        self.assertEqual(self.state(), [(2, 0, "rea")])
+        self.assertEqual(self.state(), [(2, 0, REA_SCOPE)])
 
     def test_aborts_after_max_consecutive_failures(self):
         with (
@@ -186,13 +189,13 @@ class ResumableIndexTests(unittest.TestCase):
         ):
             result = rag.index(self.root, 100, ["rea"])
         self.assertFalse(result["ok"])
-        self.assertEqual(result["error"], "embedding server died")
+        self.assertTrue(result["error"].startswith("3 consecutive embed failures"))
         self.assertEqual(result["chunks"], 2)
         self.assertEqual(result["consec"], 3)
         self.assertNotIn(6, self.calls)
         self.assertEqual(self.rows(), [1, 2])
         # The failing run is not committed, so a resume retries it.
-        self.assertEqual(self.state(), [(2, 0, "rea")])
+        self.assertEqual(self.state(), [(2, 0, REA_SCOPE)])
 
     def test_consecutive_counter_resets_on_success(self):
         with (
@@ -215,6 +218,31 @@ class ResumableIndexTests(unittest.TestCase):
             result = rag.index(self.root, 2, ["payloads"], resume=True)
         self.assertFalse(result["ok"])
         self.assertEqual(self.rows(), [1, 2])
+
+    def test_resume_refused_after_file_filter_change(self):
+        with patch.object(rag, "embed", side_effect=self.fake_embed()):
+            rag.index(self.root, 2, ["rea", "ciphey"])
+            with patch.object(rag, "FILTER_VERSION", rag.FILTER_VERSION + 1):
+                result = rag.index(self.root, 1500, ["rea", "ciphey"], resume=True)
+        self.assertFalse(result["ok"])
+        self.assertIn("Run `python index_corpus.py 1500 rea,ciphey` without --resume.",
+                      result["error"])
+        self.assertEqual(self.rows(), [1, 2])
+
+    def test_skip_line_and_abort_carry_last_embed_error(self):
+        def failing(_text):
+            rag._last_error = "HTTP 500: input is too large to process"
+            return None
+        with (
+            patch.object(rag, "MAX_CONSEC_FAIL", 2),
+            patch.object(rag, "embed", side_effect=failing),
+            patch("builtins.print") as fake_print,
+        ):
+            result = rag.index(self.root, 100, ["rea"])
+        self.assertIn("input is too large", result["error"])
+        logged = " ".join(str(call.args[0]) for call in fake_print.call_args_list)
+        self.assertIn("skip", logged)
+        self.assertIn("input is too large", logged)
 
     def test_long_chunk_is_logged(self):
         with (
@@ -285,6 +313,63 @@ class ConnectionLeakTests(unittest.TestCase):
 
         self.assertGreaterEqual(len(opened), 9)
         self.assertEqual([c for c in opened if not c.closed], [])
+
+
+class CorpusFilterTests(unittest.TestCase):
+    def test_dumps_wordlists_images_and_long_lines_are_excluded(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = pathlib.Path(tmp.name) / "corpus"
+        files = {
+            "ciphey/README.md": "usage\n",
+            "ciphey/docs/guide.md": "guide\n",
+            "ciphey/images/repomix-output.txt": "dump\n",
+            "ciphey/images/notes.md": "image notes\n",
+            "ciphey/benches/data/wordlist.txt": "aaciv\n",
+            "ciphey/tests/fixtures/sample.json": "{}\n",
+            "rea/dist.min.json": "{}\n",
+            "rea/svg.md": "<svg " + "x" * 3000 + ">\n",
+            "rea/docs/cli.md": "rea --help\n",
+            "images/top.md": "repo literally named images\n",
+        }
+        for rel, text in files.items():
+            path = root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        kept = [f.relative_to(root).as_posix() for f in rag._files(root, None)]
+        self.assertEqual(kept, ["ciphey/README.md", "ciphey/docs/guide.md",
+                                "images/top.md", "rea/docs/cli.md"])
+
+
+class EmbedServerStartTests(unittest.TestCase):
+    def test_ensure_sets_batch_flags_and_logs_stderr(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = pathlib.Path(tmp.name)
+        model = base / "embed.gguf"
+        model.write_bytes(b"")
+        log = base / "logs" / "embed.log"
+        with (
+            patch.object(rag, "_up", side_effect=[False, True]),
+            patch.object(rag, "EMBED", model),
+            patch.object(rag, "LOG", log),
+            patch.object(rag.subprocess, "Popen") as popen,
+        ):
+            self.assertTrue(rag.ensure())
+        args = popen.call_args.args[0]
+        self.assertEqual(args[args.index("-b") + 1], "2048")
+        self.assertEqual(args[args.index("-ub") + 1], "2048")
+        self.assertEqual(args[args.index("-c") + 1], "2048")
+        kwargs = popen.call_args.kwargs
+        self.assertEqual(kwargs["stderr"], rag.subprocess.STDOUT)
+        self.assertEqual(pathlib.Path(kwargs["stdout"].name), log)
+        self.assertIn("-ub 2048", log.read_text(encoding="utf-8"))
+
+    def test_embed_records_http_error(self):
+        response = type("R", (), {"status_code": 500, "text": "input is too large"})()
+        with patch.object(rag.httpx, "post", return_value=response):
+            self.assertIsNone(rag.embed("x"))
+        self.assertEqual(rag._last_error, "HTTP 500: input is too large")
 
 
 if __name__ == "__main__":

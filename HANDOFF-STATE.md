@@ -15,13 +15,16 @@
 - WP-14 (rescoped to indexer resilience) adds `embed_retry` (3 tries, 0.5s then 1.5s backoff), a `MAX_CONSEC_FAIL=20` abort with skipped counting, and a SQLite resume cursor (`index_state.next_candidate`) committed in the same transaction as the inserted rows.
 - WP-14: `python index_corpus.py <limit> <repo,repo> [--resume]`; without `--resume` the chunks and state are cleared. Long chunks (>4000 chars) are logged; progress prints every 25 chunks with done/skipped/consec.
 - WP-14 skipped candidates are committed with the next successful insert, so an abort or interrupt retries them on resume instead of dropping them.
-- Full suite passes: 48 tests (`python -m pytest -q` or `python -m unittest discover -s tests`).
+- WP-14 follow-up: all SQLite access goes through `store.session()` (commit + close), which fixes the Windows nox.db lock in tests. `pytest.ini` added.
+- WP-14 follow-up: the embed server starts with `-c 2048 -b 2048 -ub 2048`, and its stdout/stderr go to `logs/embed.log` (grep `n_ubatch`). The first live run failed on dense chunks under the 512-token default batch.
+- WP-14 follow-up: the indexer skips `images/`, `testdata/`, `fixtures/`, `repomix-output*`, `*wordlist*`, `*.min.*`, and any file with a line over 2000 chars. `FILTER_VERSION=2` is part of the resume fingerprint, so `--resume` is refused after a filter change.
+- Full suite passes: 54 tests (`python -m pytest -q`).
 
 ## In Progress
 - None.
 
 ## Pending Live Checks
-- WP-14 live run on the Windows box with the embed model: `python index_corpus.py 1500 rea,ciphey` must finish and report chunks plus skipped.
+- WP-14 live run on the Windows box: kill any stale llama-server on port 8095 first (it would keep the old 512 batch). Then `python index_corpus.py 1500 rea,ciphey` must finish and report chunks plus skipped, and `logs/embed.log` must show `n_ubatch = 2048`. The first live run aborted at 787 ciphey chunks and never reached `rea/`.
 - Unverified: a REA CLI question surfacing REA docs above payload files. This needs the live embed model. No reranker was built (descoped), and retrieval is still plain cosine with the 0.60 floor.
 
 ## Remaining

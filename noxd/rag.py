@@ -1,6 +1,7 @@
 """Local embeddings + cosine retrieval over the corpus."""
 from __future__ import annotations
 
+import fnmatch
 import json
 import math
 import pathlib
@@ -16,7 +17,11 @@ from .store import session
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BIN = ROOT / "bin" / ("llama-server.exe" if sys.platform == "win32" else "llama-server")
 EMBED = ROOT / "models" / "nomic-embed-text-v1.5.Q4_K_M.gguf"
+LOG = ROOT / "logs" / "embed.log"
 PORT = 8095
+# Embedding inputs must fit in one physical batch; llama-server's default
+# n_ubatch is 512 tokens, which dense chunks (wordlists, SVG, dumps) exceed.
+BATCH = 2048
 MIN_SCORE = 0.60
 RETRY_DELAYS = (0.5, 1.5)
 MAX_CONSEC_FAIL = 20
@@ -26,6 +31,14 @@ _sleep = time.sleep
 
 TEXT_EXT = {".md", ".txt", ".rst", ".conf", ".cfg", ".yaml", ".yml", ".json"}
 SKIP = {".git", "node_modules", "__pycache__", ".venv", "dist", "build"}
+# Generated dumps, data and binary-ish text that only waste embed calls.
+# Bump FILTER_VERSION whenever these change: it is part of the resume
+# fingerprint, because candidate numbers shift when the file set changes.
+FILTER_VERSION = 2
+EXCLUDE_DIRS = {"images", "testdata", "test-data", "fixtures"}
+EXCLUDE_NAMES = ("repomix-output*", "*wordlist*", "*.min.*")
+MAX_LINE = 2000
+_last_error = ""
 
 
 def _up() -> bool:
@@ -40,12 +53,16 @@ def ensure() -> bool:
     if not EMBED.exists():
         return False
     flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-    subprocess.Popen(
-        [str(BIN), "-m", str(EMBED), "-c", "2048", "-ngl", "99",
-         "--host", "127.0.0.1", "--port", str(PORT), "--embeddings", "-np", "1"],
-        cwd=str(BIN.parent), stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL, creationflags=flags,
-    )
+    args = [str(BIN), "-m", str(EMBED), "-c", str(BATCH),
+            "-b", str(BATCH), "-ub", str(BATCH), "-ngl", "99",
+            "--host", "127.0.0.1", "--port", str(PORT), "--embeddings", "-np", "1"]
+    LOG.parent.mkdir(parents=True, exist_ok=True)
+    with open(LOG, "a", encoding="utf-8", errors="replace") as log:
+        log.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} start: {' '.join(args)}\n")
+        log.flush()
+        # The child keeps its own copy of the handle; ours closes on exit.
+        subprocess.Popen(args, cwd=str(BIN.parent), stdout=log,
+                         stderr=subprocess.STDOUT, creationflags=flags)
     for _ in range(120):
         if _up():
             return True
@@ -54,11 +71,16 @@ def ensure() -> bool:
 
 
 def embed(text: str) -> list[float] | None:
+    global _last_error
     try:
         r = httpx.post(f"http://127.0.0.1:{PORT}/v1/embeddings",
                        json={"input": text[:6000]}, timeout=120)
+        if r.status_code != 200:
+            _last_error = f"HTTP {r.status_code}: {r.text[:200]}"
+            return None
         return r.json()["data"][0]["embedding"]
-    except Exception:
+    except Exception as e:
+        _last_error = f"{type(e).__name__}: {e}"[:200]
         return None
 
 
@@ -99,6 +121,10 @@ def _files(root: pathlib.Path, only: list[str] | None) -> list[pathlib.Path]:
             continue
         if SKIP & set(rel.parts):
             continue
+        if EXCLUDE_DIRS & set(rel.parts[1:-1]):
+            continue
+        if any(fnmatch.fnmatch(p.name.lower(), pat) for pat in EXCLUDE_NAMES):
+            continue
         if only and rel.parts[0] not in only:
             continue
         try:
@@ -106,10 +132,21 @@ def _files(root: pathlib.Path, only: list[str] | None) -> list[pathlib.Path]:
                 continue
         except OSError:
             continue
+        if _has_long_line(p):
+            continue
         files.append(p)
     # Stable order so a candidate number means the same chunk on every run.
     files.sort(key=lambda f: f.relative_to(root).as_posix())
     return files
+
+
+def _has_long_line(p: pathlib.Path) -> bool:
+    """Minified/SVG/dump files: one line longer than MAX_LINE chars."""
+    try:
+        with open(p, encoding="utf-8", errors="replace") as f:
+            return any(len(line) > MAX_LINE for line in f)
+    except OSError:
+        return True
 
 
 def _candidates(files: list[pathlib.Path]):
@@ -152,15 +189,18 @@ def index(root: pathlib.Path, limit: int = 1500, only: list[str] | None = None,
     if not ensure():
         return {"ok": False, "error": "embedding model unavailable"}
 
-    scope = ",".join(sorted(only)) if only else "*"
+    repos = ",".join(sorted(only)) if only else "*"
+    scope = f"{repos}|filter={FILTER_VERSION}"
+    clean_cmd = f"python index_corpus.py {limit}" + (f" {','.join(only)}" if only else "")
     files = _files(root, only)
     print(f"{len(files)} candidate files", flush=True)
 
     with session() as c:
         state = _state(c) if resume else None
         if resume and state and state["scope"] != scope:
-            return {"ok": False, "error": f"resume scope mismatch: saved {state['scope']!r}, "
-                                          f"requested {scope!r}; rerun without resume"}
+            return {"ok": False, "error": f"resume refused: saved scope {state['scope']!r} != "
+                                          f"{scope!r} (repo list or file filter changed). "
+                                          f"Run `{clean_cmd}` without --resume."}
         if not resume or not state:
             c.execute("DELETE FROM chunks")
             c.execute("DELETE FROM index_state")
@@ -188,7 +228,7 @@ def index(root: pathlib.Path, limit: int = 1500, only: list[str] | None = None,
                 consec += 1
                 pending_skipped += 1
                 pending_next = n + 1
-                print(f"  skip {p} #{n + 1} (consec={consec})", flush=True)
+                print(f"  skip {p} #{n + 1} (consec={consec}) {_last_error}", flush=True)
                 if consec >= MAX_CONSEC_FAIL:
                     aborted = True
                     break
@@ -207,7 +247,8 @@ def index(root: pathlib.Path, limit: int = 1500, only: list[str] | None = None,
 
         if aborted:
             # Leave the failing run uncommitted so a resume retries it.
-            return {"ok": False, "error": "embedding server died", "chunks": done,
+            return {"ok": False, "error": f"{consec} consecutive embed failures "
+                                          f"(last: {_last_error})", "chunks": done,
                     "skipped": committed_skipped, "next_candidate": committed_next,
                     "consec": consec}
         if (pending_next, pending_skipped) != (committed_next, committed_skipped):
